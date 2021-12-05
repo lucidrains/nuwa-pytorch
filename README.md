@@ -4,6 +4,8 @@
 
 Implementation of <a href="https://arxiv.org/abs/2111.12417">NÜWA</a>, state of the art attention network for text to video synthesis, in Pytorch. This repository will be populated in the case that Microsoft does not open source the code by end of December. It may also contain an extension into video and audio, using a dual decoder approach.
 
+<a href="https://www.youtube.com/watch?v=C9CTnZJ9ZE0">DeepReader</a>
+
 ## Citations
 
 ```bibtex
