@@ -16,7 +16,8 @@ setup(
   ],
   install_requires=[
     'einops>=0.3',
-    'torch>=1.6'
+    'torch>=1.6',
+    'vector-quantize-pytorch'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
