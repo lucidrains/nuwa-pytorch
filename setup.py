@@ -15,6 +15,7 @@ setup(
     'transformers'
   ],
   install_requires=[
+    'axial_positional_embedding',
     'einops>=0.3',
     'torch>=1.6',
     'vector-quantize-pytorch>=0.4.10'

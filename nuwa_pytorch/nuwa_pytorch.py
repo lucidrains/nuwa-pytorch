@@ -4,7 +4,9 @@ import torch.nn.functional as F
 
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
+
 from vector_quantize_pytorch import VectorQuantize as VQ
+from axial_positional_embedding import AxialPositionalEmbedding
 
 # constants
 
@@ -30,6 +32,7 @@ class VQGanVAE(nn.Module):
         self,
         *,
         dim,
+        image_size,
         channels = 3,
         num_layers = 3,
         vq_codebook_size = 512,
@@ -37,6 +40,9 @@ class VQGanVAE(nn.Module):
         vq_commitment_weight = 1.
     ):
         super().__init__()
+        self.num_layers = num_layers
+        self.codebook_size = vq_codebook_size
+
         self.encoders = MList([])
         self.decoders = MList([])
 
@@ -57,19 +63,35 @@ class VQGanVAE(nn.Module):
             accept_image_fmap = True
         )
 
-    def forward(
-        self,
-        img
-    ):
-        fmap = img.clone()
+    def encode(self, img):
+        fmap = img
 
         for enc in self.encoders:
             fmap = enc(fmap)
 
-        fmap, indices, commit_loss = self.vq(fmap)
+        return self.vq(fmap)
+
+    @torch.no_grad()
+    def get_video_indices(self, video):
+        b, f, _, h, w = video.shape
+        images = rearrange(video, 'b f ... -> (b f) ...')
+        _, indices, _ = self.encode(images)
+        return rearrange(indices, '(b f) ... -> b f ...', b = b)
+
+    def forward(
+        self,
+        img,
+        return_loss = False
+    ):
+        fmap = img.clone()
+
+        fmap, indices, commit_loss = self.encode(img)
 
         for dec in self.decoders:
             fmap = dec(fmap)
+
+        if not return_loss:
+            return fmap
 
         recon_loss = F.mse_loss(fmap, img)
         loss = recon_loss + commit_loss
@@ -187,18 +209,28 @@ class NUWA(nn.Module):
     def __init__(
         self,
         *,
+        vae,
         dim,
         image_size,
+        max_video_frames = 5,
         text_num_tokens,
         text_max_seq_len = 256,
         text_enc_depth = 6,
         text_enc_dim_head = 64,
-        text_enc_heads = 8
+        text_enc_heads = 8,
+        dec_depth = 6,
+        dec_dim_head = 64,
+        dec_heads = 8
     ):
         super().__init__()
+        self.vae = vae
+        vae_num_layers = vae.num_layers
+        num_image_tokens = vae.codebook_size
+
         self.text_max_seq_len = text_max_seq_len
         self.text_embedding = nn.Embedding(text_num_tokens, dim)
         self.text_pos_embedding = nn.Embedding(text_max_seq_len, dim)
+
 
         self.text_transformer = Transformer(
             dim = dim,
@@ -206,6 +238,25 @@ class NUWA(nn.Module):
             heads = text_enc_heads,
             dim_head = text_enc_dim_head
         )
+
+        self.video_bos = nn.Parameter(torch.randn(dim))
+        self.image_embedding = nn.Embedding(num_image_tokens, dim)
+
+        fmap_size = image_size // (2 ** vae_num_layers)
+
+        self.video_pos_emb = AxialPositionalEmbedding(
+            dim = dim,
+            axial_shape = (max_video_frames, fmap_size, fmap_size)
+        )
+
+        self.video_transformer = Transformer(
+            dim = dim,
+            depth = dec_depth,
+            heads = dec_heads,
+            dim_head = dec_dim_head
+        )
+
+        self.to_logits = nn.Linear(dim, num_image_tokens)
 
     def forward(
         self,
@@ -216,7 +267,7 @@ class NUWA(nn.Module):
         text_mask = None,
         return_loss = False
     ):
-        seq_len, device = text.shape[1], text.device
+        batch, seq_len, device = *text.shape, text.device
         assert seq_len <= self.text_max_seq_len, 'your input text has a greater length than what was designated on initialization'
 
         tokens = self.text_embedding(text)
@@ -224,4 +275,22 @@ class NUWA(nn.Module):
         tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
 
         text_embeds = self.text_transformer(tokens, mask = text_mask)
-        return text_embeds
+
+        frame_indices = self.vae.get_video_indices(video)
+        frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
+        frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
+
+        frame_embeddings = self.image_embedding(frame_indices_input)
+        frame_embeddings = self.video_pos_emb(frame_embeddings) + frame_embeddings
+
+        bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
+        frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
+        frame_embeddings = self.video_transformer(frame_embeddings)
+
+        logits = self.to_logits(frame_embeddings)
+
+        if not return_loss:
+            return logits
+
+        loss = F.cross_entropy(rearrange(logits, 'b n c -> b c n'), frame_indices)
+        return loss

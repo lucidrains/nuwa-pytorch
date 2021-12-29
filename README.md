@@ -8,6 +8,70 @@ Implementation of <a href="https://arxiv.org/abs/2111.12417">NÜWA</a>, state of
 
 <a href="https://www.youtube.com/watch?v=C9CTnZJ9ZE0">DeepReader</a>
 
+## Install
+
+```bash
+$ pip install nuwa-pytorch
+```
+
+## Usage
+
+First train the VAE
+
+```python
+import torch
+from nuwa_pytorch import VQGanVAE
+
+vae = VQGanVAE(
+    dim = 512,
+    image_size = 256,
+    num_layers = 4
+)
+
+imgs = torch.randn(10, 3, 256, 256)
+
+loss = vae(imgs, return_loss = True)
+loss.backward()
+
+# do above for many steps
+```
+
+Then, with your learned VAE
+
+```python
+import torch
+from nuwa_pytorch import NUWA, VQGanVAE
+
+vae = VQGanVAE(
+    dim = 512,
+    num_layers = 4
+)
+
+nuwa = NUWA(
+    vae = vae,
+    dim = 512,
+    max_video_frames = 5,
+    text_num_tokens = 20000,
+    image_size = 256
+)
+
+text = torch.randint(0, 20000, (1, 256))
+mask = torch.ones(1, 256).bool()
+video = torch.randn(1, 5, 3, 256, 256)
+
+loss = nuwa(
+    text = text,
+    video = video,
+    text_mask = mask,
+    return_loss = True
+)
+
+loss.backward()
+
+# do above with as much data as possible
+```
+
+
 ## Citations
 
 ```bibtex
