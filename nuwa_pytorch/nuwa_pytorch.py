@@ -6,6 +6,10 @@ from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 from vector_quantize_pytorch import VectorQuantize as VQ
 
+# constants
+
+MList = nn.ModuleList
+
 # helper functions
 
 def exists(val):
@@ -20,15 +24,51 @@ class VQGanVAE(nn.Module):
     def __init__(
         self,
         *,
-        dim
+        dim,
+        channels = 3,
+        num_layers = 3,
+        vq_codebook_size = 512,
+        vq_decay = 0.8,
+        vq_commitment_weight = 1.
     ):
         super().__init__()
+        self.encoders = MList([])
+        self.decoders = MList([])
+
+        dims = (channels, *((dim,) * num_layers))
+        reversed_dims = tuple(reversed(dims))
+        enc_dim_pairs = zip(dims[:-1], dims[1:])
+        dec_dim_pairs = zip(reversed_dims[:-1], reversed_dims[1:])
+
+        for _, (enc_dim_in, enc_dim_out), (dec_dim_in, dec_dim_out) in zip(range(num_layers), enc_dim_pairs, dec_dim_pairs):
+            self.encoders.append(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1))
+            self.decoders.append(nn.ConvTranspose2d(dec_dim_in, dec_dim_out, 4, stride = 2, padding = 1))
+
+        self.vq = VQ(
+            dim = dim,
+            codebook_size = vq_codebook_size,
+            decay = vq_decay,
+            commitment_weight = vq_commitment_weight,
+            accept_image_fmap = True
+        )
 
     def forward(
         self,
         img
     ):
-        return img
+        fmap = img.clone()
+
+        for enc in self.encoders:
+            fmap = enc(fmap)
+
+        fmap, indices, commit_loss = self.vq(fmap)
+
+        for dec in self.decoders:
+            fmap = dec(fmap)
+
+        recon_loss = F.mse_loss(fmap, img)
+        loss = recon_loss + commit_loss
+        return loss
 
 # normalizations
 
@@ -44,7 +84,8 @@ class PreNorm(nn.Module):
         self.fn = fn
 
     def forward(self, x, **kwargs):
-        return self.fn(self.norm(x), **kwargs)
+        x = self.norm(x)
+        return self.fn(x, **kwargs)
 
 # helper classes
 
@@ -117,9 +158,9 @@ class Transformer(nn.Module):
         ff_mult = 4
     ):
         super().__init__()
-        self.layers = nn.ModuleList([])
+        self.layers = MList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
+            self.layers.append(MList([
                 PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head)),
                 PreNorm(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult))
             ]))
@@ -173,5 +214,5 @@ class NUWA(nn.Module):
         pos_emb = self.text_pos_embedding(torch.arange(seq_len, device = device))
         tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
 
-        tokens = self.text_transformer(tokens)
-        return tokens
+        text_embeds = self.text_transformer(tokens, mask = text_mask)
+        return text_embeds
