@@ -73,7 +73,7 @@ loss.backward()
 
 ## Todo
 
-- [ ] complete 3dna attention, causal and non-causal, using torch unfold
+- [x] complete 3dna causal attention in decoder
 - [ ] flesh out VAE resnet blocks, offer some choices
 - [ ] make sure GAN portion of VQGan is correct, reread paper
 - [ ] offer new vqvae improvements (orthogonal reg and smaller codebook dimensions)
