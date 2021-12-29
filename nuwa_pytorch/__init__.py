@@ -1,1 +1,1 @@
-from nuwa_pytorch.nuwa_pytorch import NUWA
+from nuwa_pytorch.nuwa_pytorch import NUWA, VQGanVAE
