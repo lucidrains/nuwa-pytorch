@@ -47,7 +47,8 @@ class Discriminator(nn.Module):
         self.to_logits = nn.Sequential(
             Reduce('b d h w -> b d', 'mean'),
             nn.Linear(dim, 1),
-            Rearrange('... 1 -> ...')
+            Rearrange('... 1 -> ...'),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -115,7 +116,8 @@ class VQGanVAE(nn.Module):
     def forward(
         self,
         img,
-        return_loss = False
+        return_loss = False,
+        return_discr_loss = False
     ):
         batch, device = img.shape[0], img.device
         fmap = img.clone()
@@ -128,13 +130,23 @@ class VQGanVAE(nn.Module):
         if not return_loss:
             return fmap
 
-        recon_loss = F.mse_loss(fmap, img)
 
         # generator loss
 
         labels = torch.cat((torch.zeros(batch, device = device), torch.ones(batch, device = device)), dim = 0)
+
+        if return_discr_loss:
+            labels = torch.flip(labels, (0,))
+
         real_or_fake = self.disc(torch.cat((fmap, img), dim = 0))
-        gen_loss = F.binary_cross_entropy(real_or_fake.sigmoid(), labels)
+        gan_loss = F.binary_cross_entropy(real_or_fake, labels)
+
+        if return_discr_loss:
+            return gan_loss
+
+        # reconstruction loss
+
+        recon_loss = F.mse_loss(fmap, img)
 
         # lpips
 
@@ -144,7 +156,7 @@ class VQGanVAE(nn.Module):
 
         # combine losses
 
-        loss = recon_loss + commit_loss + gen_loss
+        loss = recon_loss + commit_loss + gan_loss
         return loss
 
 # normalizations
