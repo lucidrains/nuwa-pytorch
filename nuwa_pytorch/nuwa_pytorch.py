@@ -27,6 +27,33 @@ def log(t, eps = 1e-20):
 
 # vqgan vae
 
+class Discriminator(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_layers,
+        channels = 3
+    ):
+        super().__init__()
+        dims = (channels, *((dim,) * num_layers))
+        dim_pairs = zip(dims[:-1], dims[1:])
+
+        self.layers = MList([])
+        for _, (dim_in, dim_out) in zip(range(num_layers), dim_pairs):
+            self.layers.append(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1))
+
+        self.to_logits = nn.Sequential(
+            Reduce('b d h w -> b d', 'mean'),
+            nn.Linear(dim, 1),
+            Rearrange('... 1 -> ...')
+        )
+
+    def forward(self, x):
+        for net in self.layers:
+            x = net(x)
+
+        return self.to_logits(x)
+
 class VQGanVAE(nn.Module):
     def __init__(
         self,
@@ -63,6 +90,8 @@ class VQGanVAE(nn.Module):
             accept_image_fmap = True
         )
 
+        self.disc = Discriminator(dim = dim, num_layers = num_layers)
+
     def encode(self, img):
         fmap = img
 
@@ -83,6 +112,7 @@ class VQGanVAE(nn.Module):
         img,
         return_loss = False
     ):
+        batch, device = img.shape[0], img.device
         fmap = img.clone()
 
         fmap, indices, commit_loss = self.encode(img)
@@ -93,8 +123,12 @@ class VQGanVAE(nn.Module):
         if not return_loss:
             return fmap
 
+        labels = torch.cat((torch.zeros(batch, device = device), torch.ones(batch, device = device)), dim = 0)
+        real_or_fake = self.disc(torch.cat((fmap, img), dim = 0))
+        disc_loss = F.binary_cross_entropy(real_or_fake, labels)
+
         recon_loss = F.mse_loss(fmap, img)
-        loss = recon_loss + commit_loss
+        loss = recon_loss + commit_loss + disc_loss
         return loss
 
 # normalizations
