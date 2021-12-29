@@ -8,6 +8,8 @@ from einops.layers.torch import Rearrange, Reduce
 from vector_quantize_pytorch import VectorQuantize as VQ
 from axial_positional_embedding import AxialPositionalEmbedding
 
+import torchvision
+
 # constants
 
 MList = nn.ModuleList
@@ -92,6 +94,9 @@ class VQGanVAE(nn.Module):
 
         self.disc = Discriminator(dim = dim, num_layers = num_layers)
 
+        self.vgg = torchvision.models.vgg16(pretrained = True)
+        self.vgg.classifier = nn.Sequential(*self.vgg.classifier[:-2])
+
     def encode(self, img):
         fmap = img
 
@@ -123,12 +128,23 @@ class VQGanVAE(nn.Module):
         if not return_loss:
             return fmap
 
+        recon_loss = F.mse_loss(fmap, img)
+
+        # generator loss
+
         labels = torch.cat((torch.zeros(batch, device = device), torch.ones(batch, device = device)), dim = 0)
         real_or_fake = self.disc(torch.cat((fmap, img), dim = 0))
-        disc_loss = F.binary_cross_entropy(real_or_fake, labels)
+        gen_loss = F.binary_cross_entropy(real_or_fake.sigmoid(), labels)
 
-        recon_loss = F.mse_loss(fmap, img)
-        loss = recon_loss + commit_loss + disc_loss
+        # lpips
+
+        img_vgg_feats = self.vgg(img)
+        recon_vgg_feats = self.vgg(fmap)
+        perceptual_loss = F.mse_loss(img_vgg_feats, recon_vgg_feats)
+
+        # combine losses
+
+        loss = recon_loss + commit_loss + gen_loss
         return loss
 
 # normalizations

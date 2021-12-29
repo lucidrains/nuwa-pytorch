@@ -18,6 +18,7 @@ setup(
     'axial_positional_embedding',
     'einops>=0.3',
     'torch>=1.6',
+    'torchvision',
     'vector-quantize-pytorch>=0.4.10'
   ],
   classifiers=[
