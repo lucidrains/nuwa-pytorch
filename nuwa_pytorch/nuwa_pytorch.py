@@ -18,6 +18,11 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+# tensor helper functions
+
+def log(t, eps = 1e-20):
+    return torch.log(t.clamp(min = eps))
+
 # vqgan vae
 
 class VQGanVAE(nn.Module):
@@ -87,6 +92,8 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
+# positions
+
 # helper classes
 
 class FeedForward(nn.Module):
@@ -123,12 +130,13 @@ class Attention(nn.Module):
         inner_dim = heads * dim_head
         self.heads = heads
         self.scale = dim_head ** -0.5
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
     def forward(self, x, mask = None):
         h = self.heads
-        qkv = self.to_qkv(x).chunk(3, dim = -1)
+        qkv = (self.to_q(x), *self.to_kv(x).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
 
         q = q * self.scale
@@ -170,6 +178,7 @@ class Transformer(nn.Module):
         for attn, ff in self.layers:
             x = attn(x, mask = mask) + x
             x = ff(x) + x
+
         return self.norm(x)
 
 # main class
