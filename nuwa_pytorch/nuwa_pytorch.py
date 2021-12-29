@@ -130,7 +130,6 @@ class VQGanVAE(nn.Module):
         if not return_loss:
             return fmap
 
-
         # generator loss
 
         labels = torch.cat((torch.zeros(batch, device = device), torch.ones(batch, device = device)), dim = 0)
@@ -176,8 +175,6 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
-# positions
-
 # helper classes
 
 class FeedForward(nn.Module):
@@ -220,10 +217,19 @@ class Attention(nn.Module):
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
-    def forward(self, x, mask = None):
+    def forward(
+        self,
+        x,
+        mask = None,
+        context = None,
+        context_mask = None
+    ):
         h, device = self.heads, x.device
 
-        qkv = (self.to_q(x), *self.to_kv(x).chunk(2, dim = -1))
+        has_context = exists(context)
+        kv_input = context if has_context else x
+
+        qkv = (self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
 
         q = q * self.scale
@@ -231,9 +237,11 @@ class Attention(nn.Module):
 
         mask_value = -torch.finfo(x.dtype).max
 
-        if exists(mask):
-            mask = rearrange(mask, 'b j -> b 1 1 j')
-            sim = sim.masked_fill(mask, mask_value)
+        key_mask = mask if not has_context else context_mask
+
+        if exists(key_mask):
+            key_mask = rearrange(key_mask, 'b j -> b 1 1 j')
+            sim = sim.masked_fill(~key_mask, mask_value)
 
         if self.causal:
             i, j = sim.shape[-2:]
@@ -256,20 +264,32 @@ class Transformer(nn.Module):
         causal = False,
         heads = 8,
         dim_head = 64,
-        ff_mult = 4
+        ff_mult = 4,
+        cross_attend = False
     ):
         super().__init__()
         self.layers = MList([])
         for _ in range(depth):
             self.layers.append(MList([
                 PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal)),
+                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head)) if cross_attend else None,
                 PreNorm(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult))
             ]))
         self.norm = nn.LayerNorm(dim)
 
-    def forward(self, x, mask = None):
-        for attn, ff in self.layers:
+    def forward(
+        self,
+        x,
+        mask = None,
+        context = None,
+        context_mask = None
+    ):
+        for attn, cross_attn, ff in self.layers:
             x = attn(x, mask = mask) + x
+
+            if exists(cross_attn):
+                x = cross_attn(x, context = context, mask = mask, context_mask = context_mask) + x
+
             x = ff(x) + x
 
         return self.norm(x)
@@ -302,7 +322,6 @@ class NUWA(nn.Module):
         self.text_embedding = nn.Embedding(text_num_tokens, dim)
         self.text_pos_embedding = nn.Embedding(text_max_seq_len, dim)
 
-
         self.text_transformer = Transformer(
             dim = dim,
             depth = text_enc_depth,
@@ -325,7 +344,8 @@ class NUWA(nn.Module):
             depth = dec_depth,
             heads = dec_heads,
             dim_head = dec_dim_head,
-            causal = True
+            causal = True,
+            cross_attend = True
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)
@@ -346,7 +366,10 @@ class NUWA(nn.Module):
         pos_emb = self.text_pos_embedding(torch.arange(seq_len, device = device))
         tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
 
-        text_embeds = self.text_transformer(tokens, mask = text_mask)
+        text_embeds = self.text_transformer(
+            tokens,
+            mask = text_mask
+        )
 
         frame_indices = self.vae.get_video_indices(video)
         frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
@@ -357,7 +380,12 @@ class NUWA(nn.Module):
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
         frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
-        frame_embeddings = self.video_transformer(frame_embeddings)
+
+        frame_embeddings = self.video_transformer(
+            frame_embeddings,
+            context = text_embeds,
+            context_mask = text_mask
+        )
 
         logits = self.to_logits(frame_embeddings)
 
