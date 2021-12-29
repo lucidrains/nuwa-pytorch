@@ -10,6 +10,8 @@ from axial_positional_embedding import AxialPositionalEmbedding
 
 import torchvision
 
+from unfoldNd import unfoldNd
+
 # constants
 
 MList = nn.ModuleList
@@ -206,13 +208,15 @@ class Attention(nn.Module):
         dim,
         heads = 8,
         dim_head = 64,
-        causal = False
+        causal = False,
+        dropout = 0.
     ):
         super().__init__()
         inner_dim = heads * dim_head
         self.heads = heads
         self.causal = causal
         self.scale = dim_head ** -0.5
+        self.dropout = nn.Dropout(dropout)
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
@@ -249,9 +253,119 @@ class Attention(nn.Module):
             sim = sim.masked_fill(mask, mask_value)
 
         attn = sim.softmax(dim = -1)
+        attn = self.dropout(attn)
+
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
+
+class Sparse3DNA(nn.Module):
+    def __init__(
+        self,
+        dim,
+        video_shape,
+        kernel_size = 3,
+        heads = 8,
+        dim_head = 64,
+        dropout = 0.,
+    ):
+        super().__init__()
+        assert kernel_size % 2 == 1, 'kernel size must be odd'
+        inner_dim = dim_head *  heads
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.dropout = nn.Dropout(dropout)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+        self.kernel_size = kernel_size
+        self.video_shape = video_shape
+
+        max_num_tokens = torch.empty(video_shape).numel()
+        self.max_num_tokens = max_num_tokens
+
+        # precalculate causal mask
+
+        indices = torch.arange(max_num_tokens)
+        shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = video_shape[0], h = video_shape[1], w = video_shape[2])
+        padded_indices = F.pad(shaped_indices, (kernel_size // 2,) * 6, value = max_num_tokens) # padding has value of max tokens so to be masked out
+        unfolded_indices = unfoldNd(padded_indices, kernel_size = kernel_size)
+        unfolded_indices = rearrange(unfolded_indices, '1 k n -> n k')
+
+        causal_mask = rearrange(indices, 'n -> n 1') < unfolded_indices
+        causal_mask = F.pad(causal_mask, (1, 0), value = False) # bos tokens never get masked out
+        self.register_buffer('causal_mask', causal_mask)
+
+    def forward(self, x, mask = None):
+        b, n, _, h, device = *x.shape, self.heads, x.device
+
+        # more variables
+
+        kernel_size = self.kernel_size
+        num_frames, fmap_size, _ = self.video_shape
+
+        # pad for last token in video
+
+        x = F.pad(x, (0, 0, 0, 1), value = 0.)
+
+        # derive queries / keys / values
+
+        qkv = self.to_qkv(x).chunk(3, dim = -1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), qkv)
+
+        # scale queries
+
+        q = q * self.scale
+
+        # take care of bos
+
+        q = q[:, 1:]
+        bos_value = v[:, :1]
+
+        # prepare precomputed causal mask
+
+        causal_mask = self.causal_mask[:n]
+        causal_mask = repeat(causal_mask, 'i j -> b i j', b = b * h)
+
+        # compute keys and values
+
+        (k_bos, k), (v_bos, v) = map(lambda t: (t[:, :1], t[:, 1:]), (k, v))
+        k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
+        k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size, padding = kernel_size // 2), (k, v))
+        k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
+
+        # append bos keys and values
+
+        k_bos, v_bos = map(lambda t: repeat(t, 'b 1 d -> b n 1 d', n = k.shape[1]), (k_bos, v_bos))
+        k = torch.cat((k_bos, k), dim = 2)
+        v = torch.cat((v_bos, v), dim = 2)
+
+        # calculate sim
+
+        sim = einsum('b i d, b i j d -> b i j', q, k)
+
+        # causal mask
+
+        sim = sim.masked_fill(causal_mask, -torch.finfo(sim.dtype).max)
+
+        # attention
+
+        attn = sim.softmax(dim = -1)
+        attn = self.dropout(attn)
+
+        # aggregate values
+
+        out = einsum('b i j, b i j d -> b i d', attn, v)
+
+        # append bos value
+
+        out = torch.cat((bos_value, out), dim = 1)  # bos will always adopt its own value, since it pays attention only to itself
+
+        # merge heads
+
+        out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
+        return self.to_out(out[:, :n])
 
 # transformer
 
@@ -265,16 +379,29 @@ class Transformer(nn.Module):
         heads = 8,
         dim_head = 64,
         ff_mult = 4,
-        cross_attend = False
+        cross_attend = False,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        sparse_3dna_attn = False,
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_video_shape = None
     ):
         super().__init__()
+        assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+
         self.layers = MList([])
         for _ in range(depth):
+            if sparse_3dna_attn:
+                self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape)
+            else:
+                self_attn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = attn_dropout)
+
             self.layers.append(MList([
-                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal)),
-                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head)) if cross_attend else None,
-                PreNorm(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult))
+                PreNorm(dim = dim, fn = self_attn),
+                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
+                PreNorm(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout))
             ]))
+
         self.norm = nn.LayerNorm(dim)
 
     def forward(
@@ -311,7 +438,10 @@ class NUWA(nn.Module):
         text_enc_heads = 8,
         dec_depth = 6,
         dec_dim_head = 64,
-        dec_heads = 8
+        dec_heads = 8,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        sparse_3dna_kernel_size = 3
     ):
         super().__init__()
         self.vae = vae
@@ -326,7 +456,9 @@ class NUWA(nn.Module):
             dim = dim,
             depth = text_enc_depth,
             heads = text_enc_heads,
-            dim_head = text_enc_dim_head
+            dim_head = text_enc_dim_head,
+            attn_dropout = attn_dropout,
+            ff_dropout = ff_dropout
         )
 
         self.video_bos = nn.Parameter(torch.randn(dim))
@@ -345,7 +477,12 @@ class NUWA(nn.Module):
             heads = dec_heads,
             dim_head = dec_dim_head,
             causal = True,
-            cross_attend = True
+            cross_attend = True,
+            attn_dropout = attn_dropout,
+            ff_dropout = ff_dropout,
+            sparse_3dna_attn = True,
+            sparse_3dna_kernel_size = sparse_3dna_kernel_size,
+            sparse_3dna_video_shape = (max_video_frames, fmap_size, fmap_size)
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)

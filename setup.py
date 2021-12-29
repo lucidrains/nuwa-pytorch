@@ -19,6 +19,7 @@ setup(
     'einops>=0.3',
     'torch>=1.6',
     'torchvision',
+    'unfoldNd',
     'vector-quantize-pytorch>=0.4.10'
   ],
   classifiers=[
