@@ -2,6 +2,8 @@
 
 ## NÜWA - Pytorch (wip)
 
+<a href="https://discord.gg/xBPBXfcFHd"><img alt="Join us on Discord" src="https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white"></a></br>
+
 Implementation of <a href="https://arxiv.org/abs/2111.12417">NÜWA</a>, state of the art attention network for text to video synthesis, in Pytorch. This repository will be populated in the case that Microsoft does not open source the code by end of December. It may also contain an extension into video and audio, using a dual decoder approach.
 
 <a href="https://www.youtube.com/watch?v=InhMx1h0N40">Yannic Kilcher</a>
