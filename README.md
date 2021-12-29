@@ -71,6 +71,17 @@ loss.backward()
 # do above with as much data as possible
 ```
 
+## Todo
+
+- [ ] complete 3dna attention, causal and non-causal, using torch unfold
+- [ ] flesh out VAE resnet blocks, offer some choices
+- [ ] make sure GAN portion of VQGan is correct, reread paper
+- [ ] offer new vqvae improvements (orthogonal reg and smaller codebook dimensions)
+- [ ] offer vqvae training script
+- [ ] take care of audio transformer and cross modality attention
+- [ ] write up easy generation functions
+- [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
+- [ ] investigate custom attention layouts in microsoft deepspeed sparse attention (using triton)
 
 ## Citations
 
