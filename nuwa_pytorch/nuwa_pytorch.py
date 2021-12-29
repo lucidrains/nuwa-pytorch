@@ -196,18 +196,21 @@ class Attention(nn.Module):
         *,
         dim,
         heads = 8,
-        dim_head = 64
+        dim_head = 64,
+        causal = False
     ):
         super().__init__()
         inner_dim = heads * dim_head
         self.heads = heads
+        self.causal = causal
         self.scale = dim_head ** -0.5
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
     def forward(self, x, mask = None):
-        h = self.heads
+        h, device = self.heads, x.device
+
         qkv = (self.to_q(x), *self.to_kv(x).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
 
@@ -218,6 +221,11 @@ class Attention(nn.Module):
 
         if exists(mask):
             mask = rearrange(mask, 'b j -> b 1 1 j')
+            sim = sim.masked_fill(mask, mask_value)
+
+        if self.causal:
+            i, j = sim.shape[-2:]
+            mask = torch.ones(i, j, device = device, dtype = torch.bool).triu_(1)
             sim = sim.masked_fill(mask, mask_value)
 
         attn = sim.softmax(dim = -1)
@@ -233,6 +241,7 @@ class Transformer(nn.Module):
         *,
         dim,
         depth,
+        causal = False,
         heads = 8,
         dim_head = 64,
         ff_mult = 4
@@ -241,7 +250,7 @@ class Transformer(nn.Module):
         self.layers = MList([])
         for _ in range(depth):
             self.layers.append(MList([
-                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head)),
+                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal)),
                 PreNorm(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult))
             ]))
         self.norm = nn.LayerNorm(dim)
@@ -303,7 +312,8 @@ class NUWA(nn.Module):
             dim = dim,
             depth = dec_depth,
             heads = dec_heads,
-            dim_head = dec_dim_head
+            dim_head = dec_dim_head,
+            causal = True
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)
