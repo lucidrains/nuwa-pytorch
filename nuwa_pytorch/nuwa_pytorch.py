@@ -29,6 +29,23 @@ def default(val, d):
 def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
 
+def sigmoid(t):
+    return torch.where(t >= 0, 1 / (1 + torch.exp(-t)), t.exp() / (1 + t.exp()))
+
+# gan losses
+
+def hinge_discr_loss(fake, real):
+    return (F.relu(1 + fake) + F.relu(1 - real)).mean()
+
+def hinge_gen_loss(fake):
+    return -fake.mean()
+
+def bce_discr_loss(fake, real):
+    return (-log(1 - sigmoid(fake)) - log(sigmoid(real))).mean()
+
+def bce_gen_loss(fake):
+    return -log(sigmoid(fake)).mean()
+
 # vqgan vae
 
 class Discriminator(nn.Module):
@@ -49,8 +66,7 @@ class Discriminator(nn.Module):
         self.to_logits = nn.Sequential(
             Reduce('b d h w -> b d', 'mean'),
             nn.Linear(dim, 1),
-            Rearrange('... 1 -> ...'),
-            nn.Sigmoid()
+            Rearrange('... 1 -> ...')
         )
 
     def forward(self, x):
@@ -70,7 +86,8 @@ class VQGanVAE(nn.Module):
         vq_codebook_size = 512,
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
-        l2_recon_loss = False
+        l2_recon_loss = False,
+        use_hinge_loss = False
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -96,20 +113,33 @@ class VQGanVAE(nn.Module):
             accept_image_fmap = True
         )
 
-        self.disc = Discriminator(dim = dim, num_layers = num_layers)
+        # reconstruction loss
+
+        self.l2_recon_loss = l2_recon_loss
+
+        # preceptual loss
 
         self.vgg = torchvision.models.vgg16(pretrained = True)
         self.vgg.classifier = nn.Sequential(*self.vgg.classifier[:-2])
 
-        self.l2_recon_loss = l2_recon_loss
+        # gan related losses
 
-    def encode(self, img):
-        fmap = img
+        self.discr = Discriminator(dim = dim, num_layers = num_layers)
 
+        self.discr_loss = hinge_discr_loss if use_hinge_loss else bce_discr_loss
+        self.gen_loss = hinge_gen_loss if use_hinge_loss else bce_gen_loss
+
+    def encode(self, fmap):
         for enc in self.encoders:
             fmap = enc(fmap)
 
         return self.vq(fmap)
+
+    def decode(self, fmap):
+        for dec in self.decoders:
+            fmap = dec(fmap)
+
+        return fmap
 
     @torch.no_grad()
     def get_video_indices(self, video):
@@ -129,24 +159,19 @@ class VQGanVAE(nn.Module):
 
         fmap, indices, commit_loss = self.encode(img)
 
-        for dec in self.decoders:
-            fmap = dec(fmap)
+        fmap = self.decode(fmap)
 
         if not return_loss:
             return fmap
 
+        if return_discr_loss:
+            fmap.detach_()
+            fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
+            return self.discr_loss(fmap_discr_logits, img_discr_logits)
+
         # generator loss
 
-        labels = torch.cat((torch.zeros(batch, device = device), torch.ones(batch, device = device)), dim = 0)
-
-        if return_discr_loss:
-            labels = torch.flip(labels, (0,))
-
-        real_or_fake = self.disc(torch.cat((fmap, img), dim = 0))
-        gan_loss = F.binary_cross_entropy(real_or_fake, labels)
-
-        if return_discr_loss:
-            return gan_loss
+        gen_loss = self.gen_loss(fmap)
 
         # reconstruction loss
 
@@ -161,7 +186,7 @@ class VQGanVAE(nn.Module):
 
         # combine losses
 
-        loss = recon_loss + commit_loss + gan_loss
+        loss = recon_loss + commit_loss + gen_loss
         return loss
 
 # normalizations
