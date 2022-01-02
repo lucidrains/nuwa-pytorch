@@ -69,7 +69,8 @@ class VQGanVAE(nn.Module):
         num_layers = 3,
         vq_codebook_size = 512,
         vq_decay = 0.8,
-        vq_commitment_weight = 1.
+        vq_commitment_weight = 1.,
+        l2_recon_loss = False
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -99,6 +100,8 @@ class VQGanVAE(nn.Module):
 
         self.vgg = torchvision.models.vgg16(pretrained = True)
         self.vgg.classifier = nn.Sequential(*self.vgg.classifier[:-2])
+
+        self.l2_recon_loss = l2_recon_loss
 
     def encode(self, img):
         fmap = img
@@ -147,7 +150,8 @@ class VQGanVAE(nn.Module):
 
         # reconstruction loss
 
-        recon_loss = F.mse_loss(fmap, img)
+        recon_loss_fn = F.mse_loss if self.l2_recon_loss else F.l1_loss
+        recon_loss = recon_loss_fn(fmap, img)
 
         # lpips
 
