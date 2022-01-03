@@ -425,12 +425,11 @@ class Sparse3DNA(nn.Module):
 
         # pad for last token in video
 
-        if padding > 0:
-            x = F.pad(x, (0, 0, 0, padding), value = 0.)
+        padded_x = F.pad(x, (0, 0, 0, padding), value = 0.) if padding > 0 else x
 
         # derive queries / keys / values
 
-        q, k, v = (self.to_q(x), *self.to_kv(x).chunk(2, dim = -1))
+        q, k, v = (self.to_q(x), *self.to_kv(padded_x).chunk(2, dim = -1))
 
         # early return if <bos>
 
@@ -456,6 +455,7 @@ class Sparse3DNA(nn.Module):
         k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
         k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size, padding = kernel_size // 2), (k, v))
         k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
+        k, v = map(lambda t: t[:, :(n - 1)], (k, v))
 
         # append bos keys and values
 
@@ -491,7 +491,7 @@ class Sparse3DNA(nn.Module):
         # merge heads
 
         out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
-        return self.to_out(out[:, :n])
+        return self.to_out(out)
 
 # transformer
 
