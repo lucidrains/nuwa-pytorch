@@ -101,6 +101,10 @@ def grad_layer_wrt_loss(loss, layer):
         retain_graph = True
     )[0].detach()
 
+def batch_process(t, fn, chunks = 10, dim = 0):
+    chunks = [fn(t_chunk) for t_chunk in t.chunk(chunks, dim = dim)]
+    return torch.cat(chunks, dim = dim)
+
 # vqgan vae
 
 class Discriminator(nn.Module):
@@ -137,7 +141,7 @@ class VQGanVAE(nn.Module):
         dim,
         image_size,
         channels = 3,
-        num_layers = 3,
+        num_layers = 4,
         vq_codebook_size = 512,
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
@@ -154,7 +158,7 @@ class VQGanVAE(nn.Module):
         self.encoders = MList([])
         self.decoders = MList([])
 
-        dims = (dim,) * num_layers
+        dims = (dim,) * (num_layers + 1)
         reversed_dims = tuple(reversed(dims))
         enc_dim_pairs = zip(dims[:-1], dims[1:])
         dec_dim_pairs = zip(reversed_dims[:-1], reversed_dims[1:])
@@ -555,7 +559,6 @@ class AxialPositionalEmbedding(nn.Module):
         super().__init__()
         self.dim = dim
         frames, height, width = shape
-
         self.pos_frames = nn.Parameter(torch.randn(frames, dim))
         self.pos_height = nn.Parameter(torch.randn(height, dim))
         self.pos_width = nn.Parameter(torch.randn(width, dim))
@@ -665,7 +668,8 @@ class NUWA(nn.Module):
         text,
         text_mask = None,
         filter_thres = 0.9,
-        temperature = 1.
+        temperature = 1.,
+        decode_max_batchsize = 10
     ):
         batch, seq_len, device = *text.shape, text.device
         text_embeds = self.embed_text(text, mask = text_mask)
@@ -699,7 +703,7 @@ class NUWA(nn.Module):
         codes = self.vae.codebook[video_indices]
         codes = rearrange(codes, 'b (f h w) d -> (b f) d h w', h = self.video_fmap_size, w = self.video_fmap_size)
 
-        image_reconstructions = self.vae.decode(codes)
+        image_reconstructions = batch_process(codes, self.vae.decode, chunks = decode_max_batchsize)
         video = rearrange(image_reconstructions, '(b f) d h w -> b f d h w', b = batch)
         return video
 
