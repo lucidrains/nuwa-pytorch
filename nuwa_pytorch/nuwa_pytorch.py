@@ -1,5 +1,6 @@
 import torch
 from torch import nn, einsum
+from torch.autograd import grad
 import torch.nn.functional as F
 
 from einops import rearrange, reduce, repeat
@@ -49,6 +50,9 @@ def gumbel_noise(t):
 def gumbel_sample(t, temperature = 1., dim = -1):
     return ((t / temperature) + gumbel_noise(t)).argmax(dim = dim)
 
+def safe_div(numer, denom, eps = 1e-6):
+    return numer / (denom + eps)
+
 # gan losses
 
 def hinge_discr_loss(fake, real):
@@ -62,6 +66,14 @@ def bce_discr_loss(fake, real):
 
 def bce_gen_loss(fake):
     return -log(sigmoid(fake)).mean()
+
+def grad_layer_wrt_loss(loss, layer):
+    return grad(
+        outputs = loss,
+        inputs = layer,
+        grad_outputs = torch.ones_like(loss),
+        retain_graph = True
+    )[0].detach()
 
 # vqgan vae
 
@@ -113,7 +125,7 @@ class VQGanVAE(nn.Module):
         self.encoders = MList([])
         self.decoders = MList([])
 
-        dims = (channels, *((dim,) * num_layers))
+        dims = (dim,) * num_layers
         reversed_dims = tuple(reversed(dims))
         enc_dim_pairs = zip(dims[:-1], dims[1:])
         dec_dim_pairs = zip(reversed_dims[:-1], reversed_dims[1:])
@@ -121,6 +133,9 @@ class VQGanVAE(nn.Module):
         for _, (enc_dim_in, enc_dim_out), (dec_dim_in, dec_dim_out) in zip(range(num_layers), enc_dim_pairs, dec_dim_pairs):
             self.encoders.append(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1))
             self.decoders.append(nn.ConvTranspose2d(dec_dim_in, dec_dim_out, 4, stride = 2, padding = 1))
+
+        self.encoders.insert(0, nn.Conv2d(channels, dim, 3, padding = 1))
+        self.decoders.append(nn.Conv2d(dim, channels, 1))
 
         self.vq = VQ(
             dim = dim,
@@ -132,7 +147,7 @@ class VQGanVAE(nn.Module):
 
         # reconstruction loss
 
-        self.l2_recon_loss = l2_recon_loss
+        self.recon_loss_fn = F.mse_loss if l2_recon_loss else F.l1_loss
 
         # preceptual loss
 
@@ -187,29 +202,39 @@ class VQGanVAE(nn.Module):
 
         assert return_loss ^ return_discr_loss, 'you should either return autoencoder loss or discriminator loss, but not both'
 
-        if return_discr_loss:
-            fmap.detach_()
-            fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
-            return self.discr_loss(fmap_discr_logits, img_discr_logits)
-
-        # generator loss
-
-        gen_loss = self.gen_loss(fmap)
-
-        # reconstruction loss
-
-        recon_loss_fn = F.mse_loss if self.l2_recon_loss else F.l1_loss
-        recon_loss = recon_loss_fn(fmap, img)
-
         # lpips
 
         img_vgg_feats = self.vgg(img)
         recon_vgg_feats = self.vgg(fmap)
         perceptual_loss = F.mse_loss(img_vgg_feats, recon_vgg_feats)
 
+        # whether to return discriminator loss
+
+        if return_discr_loss:
+            fmap.detach_()
+            fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
+            discr_loss = self.discr_loss(fmap_discr_logits, img_discr_logits)
+            return discr_loss
+
+        # generator loss
+
+        gen_loss = self.gen_loss(fmap)
+
+        # calculate adaptive weight
+
+        last_dec_layer = self.decoders[-1].weight
+
+        norm_grad_wrt_gen_loss = grad_layer_wrt_loss(gen_loss, last_dec_layer).norm(p = 2)
+        norm_grad_wrt_perceptual_loss = grad_layer_wrt_loss(perceptual_loss, last_dec_layer).norm(p = 2)
+        adaptive_weight = safe_div(norm_grad_wrt_perceptual_loss, norm_grad_wrt_gen_loss)
+
+        # reconstruction loss
+
+        recon_loss = self.recon_loss_fn(fmap, img)
+
         # combine losses
 
-        loss = recon_loss + commit_loss + gen_loss
+        loss = recon_loss + perceptual_loss + commit_loss + adaptive_weight * gen_loss
         return loss
 
 # normalizations
