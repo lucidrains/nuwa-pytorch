@@ -106,6 +106,7 @@ video = nuwa.generate(text = text, text_mask = mask) # (1, 5, 3, 256, 256)
 - [ ] investigate custom attention layouts in microsoft deepspeed sparse attention (using triton)
 - [ ] batch video tokens -> vae during video generation, to prevent oom
 - [ ] make sure adaptive weight in vqgan is correctly built
+- [ ] add all stability tricks from cogview paper by default, as well as cosine sim attention from swinv2 as an option
 
 ## Citations
 
