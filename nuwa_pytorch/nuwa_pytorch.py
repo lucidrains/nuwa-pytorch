@@ -6,7 +6,6 @@ from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 
 from vector_quantize_pytorch import VectorQuantize as VQ
-from axial_positional_embedding import AxialPositionalEmbedding
 
 import torchvision
 
@@ -489,6 +488,30 @@ class Transformer(nn.Module):
 
         return self.norm(x)
 
+# positional embedding
+
+class AxialPositionalEmbedding(nn.Module):
+    def __init__(
+        self,
+        dim,
+        *,
+        shape
+    ):
+        super().__init__()
+        self.dim = dim
+        frames, height, width = shape
+
+        self.pos_frames = nn.Parameter(torch.randn(frames, dim))
+        self.pos_height = nn.Parameter(torch.randn(height, dim))
+        self.pos_width = nn.Parameter(torch.randn(width, dim))
+
+    def forward(self):
+        pos_frames = rearrange(self.pos_frames, 'f d -> f 1 1 d')
+        pos_height = rearrange(self.pos_height, 'h d -> 1 h 1 d')
+        pos_width = rearrange(self.pos_width, 'w d -> 1 1 w d')
+        positions = pos_frames + pos_height + pos_width
+        return rearrange(positions, 'f h w d -> 1 (f h w) d')
+
 # sampling helpers
 
 def top_k(logits, thres = 0.5):
@@ -548,10 +571,7 @@ class NUWA(nn.Module):
         self.max_video_frames = max_video_frames
         video_shape = (max_video_frames, fmap_size, fmap_size)
 
-        self.video_pos_emb = AxialPositionalEmbedding(
-            dim = dim,
-            axial_shape = video_shape
-        )
+        self.video_pos_emb = AxialPositionalEmbedding(dim, shape = video_shape)
 
         self.video_transformer = Transformer(
             dim = dim,
@@ -600,9 +620,11 @@ class NUWA(nn.Module):
         video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
         total_video_tokens = self.video_fmap_size * self.video_fmap_size * self.max_video_frames
 
-        for _ in range(total_video_tokens):
+        pos_emb = self.video_pos_emb()
+
+        for ind in range(total_video_tokens):
             frame_embeddings = self.image_embedding(video_indices)
-            frame_embeddings = self.video_pos_emb(frame_embeddings) + frame_embeddings
+            frame_embeddings = pos_emb[:, :ind] + frame_embeddings
             frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
 
             frame_embeddings = self.video_transformer(
@@ -643,7 +665,7 @@ class NUWA(nn.Module):
         frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
 
         frame_embeddings = self.image_embedding(frame_indices_input)
-        frame_embeddings = self.video_pos_emb(frame_embeddings) + frame_embeddings
+        frame_embeddings = self.video_pos_emb()[:, :-1] + frame_embeddings
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
         frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)

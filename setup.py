@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'nuwa-pytorch',
   packages = find_packages(exclude=[]),
-  version = '0.0.3',
+  version = '0.0.4',
   license='MIT',
   description = 'NÜWA - Pytorch',
   author = 'Phil Wang',
@@ -15,7 +15,6 @@ setup(
     'transformers'
   ],
   install_requires=[
-    'axial_positional_embedding',
     'einops>=0.3',
     'torch>=1.6',
     'torchvision',
