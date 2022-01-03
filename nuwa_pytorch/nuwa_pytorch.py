@@ -322,7 +322,8 @@ class Sparse3DNA(nn.Module):
         self.scale = dim_head ** -0.5
 
         self.dropout = nn.Dropout(dropout)
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.kernel_size = kernel_size
@@ -364,7 +365,7 @@ class Sparse3DNA(nn.Module):
 
         # derive queries / keys / values
 
-        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
+        q, k, v = (self.to_q(x), *self.to_kv(x).chunk(2, dim = -1))
 
         # early return if <bos>
 
