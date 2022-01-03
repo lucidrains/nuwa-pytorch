@@ -24,6 +24,17 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+# decorators
+
+def eval_decorator(fn):
+    def inner(model, *args, **kwargs):
+        was_training = model.training
+        model.eval()
+        out = fn(model, *args, **kwargs)
+        model.train(was_training)
+        return out
+    return inner
+
 # tensor helper functions
 
 def log(t, eps = 1e-20):
@@ -129,6 +140,10 @@ class VQGanVAE(nn.Module):
         self.discr_loss = hinge_discr_loss if use_hinge_loss else bce_discr_loss
         self.gen_loss = hinge_gen_loss if use_hinge_loss else bce_gen_loss
 
+    @property
+    def codebook(self):
+        return self.vq.codebook
+
     def encode(self, fmap):
         for enc in self.encoders:
             fmap = enc(fmap)
@@ -161,8 +176,10 @@ class VQGanVAE(nn.Module):
 
         fmap = self.decode(fmap)
 
-        if not return_loss:
+        if not return_loss and not return_discr_loss:
             return fmap
+
+        assert return_loss ^ return_discr_loss, 'you should either return autoencoder loss or discriminator loss, but not both'
 
         if return_discr_loss:
             fmap.detach_()
@@ -332,16 +349,31 @@ class Sparse3DNA(nn.Module):
         # more variables
 
         kernel_size = self.kernel_size
-        num_frames, fmap_size, _ = self.video_shape
+        fmap_size = self.video_shape[1]
+
+        bos_only = n == 1
+        tokens_per_frame = fmap_size ** 2
+
+        padding = 0 if bos_only else (tokens_per_frame - (n - 1) % tokens_per_frame)
+        num_frames = (n + padding) // tokens_per_frame
 
         # pad for last token in video
 
-        x = F.pad(x, (0, 0, 0, 1), value = 0.)
+        if padding > 0:
+            x = F.pad(x, (0, 0, 0, padding), value = 0.)
 
         # derive queries / keys / values
 
-        qkv = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), qkv)
+        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
+
+        # early return if <bos>
+
+        if bos_only:
+            return self.to_out(v)
+
+        # split out heads
+
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q, k, v))
 
         # scale queries
 
@@ -351,11 +383,6 @@ class Sparse3DNA(nn.Module):
 
         q = q[:, 1:]
         bos_value = v[:, :1]
-
-        # prepare precomputed causal mask
-
-        causal_mask = self.causal_mask[:n]
-        causal_mask = repeat(causal_mask, 'i j -> b i j', b = b * h)
 
         # compute keys and values
 
@@ -375,6 +402,10 @@ class Sparse3DNA(nn.Module):
         sim = einsum('b i d, b i j d -> b i j', q, k)
 
         # causal mask
+
+        i, j = sim.shape[-2:]
+        causal_mask = self.causal_mask[:i, :j]
+        causal_mask = repeat(causal_mask, 'i j -> b i j', b = b * h)
 
         sim = sim.masked_fill(causal_mask, -torch.finfo(sim.dtype).max)
 
@@ -450,6 +481,16 @@ class Transformer(nn.Module):
 
         return self.norm(x)
 
+# sampling helpers
+
+def top_k(logits, thres = 0.5):
+    num_logits = logits.shape[-1]
+    k = max(int((1 - thres) * num_logits), 1)
+    val, ind = torch.topk(logits, k)
+    probs = torch.full_like(logits, float('-inf'))
+    probs.scatter_(1, ind, val)
+    return probs
+
 # main class
 
 class NUWA(nn.Module):
@@ -495,9 +536,13 @@ class NUWA(nn.Module):
 
         fmap_size = image_size // (2 ** vae_num_layers)
 
+        self.video_fmap_size = fmap_size
+        self.max_video_frames = max_video_frames
+        video_shape = (max_video_frames, fmap_size, fmap_size)
+
         self.video_pos_emb = AxialPositionalEmbedding(
             dim = dim,
-            axial_shape = (max_video_frames, fmap_size, fmap_size)
+            axial_shape = video_shape
         )
 
         self.video_transformer = Transformer(
@@ -511,10 +556,65 @@ class NUWA(nn.Module):
             ff_dropout = ff_dropout,
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
-            sparse_3dna_video_shape = (max_video_frames, fmap_size, fmap_size)
+            sparse_3dna_video_shape = video_shape
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)
+
+    @torch.no_grad()
+    @eval_decorator
+    def generate(
+        self,
+        *,
+        text,
+        text_mask = None,
+        filter_thres = 0.9,
+        temperature = 1.
+    ):
+        batch, seq_len, device = *text.shape, text.device
+        assert seq_len <= self.text_max_seq_len, 'your input text has a greater length than what was designated on initialization'
+
+        tokens = self.text_embedding(text)
+        pos_emb = self.text_pos_embedding(torch.arange(seq_len, device = device))
+        tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
+
+        text_embeds = self.text_transformer(
+            tokens,
+            mask = text_mask
+        )
+
+        bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
+
+        video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
+        total_video_tokens = self.video_fmap_size * self.video_fmap_size * self.max_video_frames
+
+        for _ in range(total_video_tokens):
+            frame_embeddings = self.image_embedding(video_indices)
+            frame_embeddings = self.video_pos_emb(frame_embeddings) + frame_embeddings
+            frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
+
+            frame_embeddings = self.video_transformer(
+                frame_embeddings,
+                context = text_embeds,
+                context_mask = text_mask
+            )
+
+            logits = self.to_logits(frame_embeddings)
+            logits = logits[:, -1, :]
+
+            filtered_logits = top_k(logits, thres = filter_thres)
+            filtered_logits /= temperature
+            filtered_logits -=  torch.amax(filtered_logits, dim = 1, keepdim = True)
+            probs = F.softmax(filtered_logits, dim = -1)
+            sample = torch.multinomial(probs, 1)
+            video_indices = torch.cat((video_indices, sample), dim = 1)
+
+        codes = self.vae.codebook[video_indices]
+        codes = rearrange(codes, 'b (f h w) d -> (b f) d h w', h = self.video_fmap_size, w = self.video_fmap_size)
+
+        image_reconstructions = self.vae.decode(codes)
+        video = rearrange(image_reconstructions, '(b f) d h w -> b f d h w', b = batch)
+        return video
 
     def forward(
         self,
