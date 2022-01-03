@@ -1,3 +1,4 @@
+from functools import partial
 import torch
 from torch import nn, einsum
 from torch.autograd import grad
@@ -23,6 +24,31 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+# keyword argument helpers
+
+def pick_and_pop(keys, d):
+    values = list(map(lambda key: d.pop(key), keys))
+    return dict(zip(keys, values))
+
+def group_dict_by_key(cond, d):
+    return_val = [dict(),dict()]
+    for key in d.keys():
+        match = bool(cond(key))
+        ind = int(not match)
+        return_val[ind][key] = d[key]
+    return (*return_val,)
+
+def string_begins_with(prefix, str):
+    return str.startswith(prefix)
+
+def group_by_key_prefix(prefix, d):
+    return group_dict_by_key(partial(string_begins_with, prefix), d)
+
+def groupby_prefix_and_trim(prefix, d):
+    kwargs_with_prefix, kwargs = group_dict_by_key(partial(string_begins_with, prefix), d)
+    kwargs_without_prefix = dict(map(lambda x: (x[0][len(prefix):], x[1]), tuple(kwargs_with_prefix.items())))
+    return kwargs_without_prefix, kwargs
 
 # decorators
 
@@ -116,9 +142,12 @@ class VQGanVAE(nn.Module):
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
         l2_recon_loss = False,
-        use_hinge_loss = False
+        use_hinge_loss = False,
+        **kwargs
     ):
         super().__init__()
+        vq_kwargs, kwargs = groupby_prefix_and_trim('vq_', kwargs)
+
         self.num_layers = num_layers
         self.codebook_size = vq_codebook_size
 
@@ -142,7 +171,8 @@ class VQGanVAE(nn.Module):
             codebook_size = vq_codebook_size,
             decay = vq_decay,
             commitment_weight = vq_commitment_weight,
-            accept_image_fmap = True
+            accept_image_fmap = True,
+            **vq_kwargs
         )
 
         # reconstruction loss
