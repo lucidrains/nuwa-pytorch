@@ -96,13 +96,16 @@ video = nuwa.generate(text = text, text_mask = mask) # (1, 5, 3, 256, 256)
 
 - [x] complete 3dna causal attention in decoder
 - [x] write up easy generation functions
+- [x] make sure GAN portion of VQGan is correct, reread paper
 - [ ] flesh out VAE resnet blocks, offer some choices
-- [ ] make sure GAN portion of VQGan is correct, reread paper
 - [ ] offer new vqvae improvements (orthogonal reg and smaller codebook dimensions)
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
 - [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
+- [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] investigate custom attention layouts in microsoft deepspeed sparse attention (using triton)
+- [ ] batch video tokens -> vae during video generation, to prevent oom
+- [ ] make sure adaptive weight in vqgan is correctly built
 
 ## Citations
 
