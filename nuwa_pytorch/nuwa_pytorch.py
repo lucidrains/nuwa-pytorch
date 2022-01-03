@@ -105,6 +105,11 @@ def batch_process(t, fn, chunks = 10, dim = 0):
     chunks = [fn(t_chunk) for t_chunk in t.chunk(chunks, dim = dim)]
     return torch.cat(chunks, dim = dim)
 
+# gradient control
+
+def frac_gradient(t, frac):
+    return t * frac + t.detach() * (1 - frac)
+
 # vqgan vae
 
 class Discriminator(nn.Module):
@@ -453,6 +458,7 @@ class Sparse3DNA(nn.Module):
 
         (k_bos, k), (v_bos, v) = map(lambda t: (t[:, :1], t[:, 1:]), (k, v))
         k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
+
         k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size, padding = kernel_size // 2), (k, v))
         k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
         k, v = map(lambda t: t[:, :(n - 1)], (k, v))
@@ -510,10 +516,12 @@ class Transformer(nn.Module):
         ff_dropout = 0.,
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
-        sparse_3dna_video_shape = None
+        sparse_3dna_video_shape = None,
+        token_gradient_frac = 0.2
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+        self.token_gradient_frac = token_gradient_frac
 
         self.layers = MList([])
         for _ in range(depth):
@@ -537,6 +545,8 @@ class Transformer(nn.Module):
         context = None,
         context_mask = None
     ):
+        x = frac_gradient(x, self.token_gradient_frac)
+
         for attn, cross_attn, ff in self.layers:
             x = attn(x, mask = mask) + x
 
@@ -600,7 +610,8 @@ class NUWA(nn.Module):
         dec_heads = 8,
         attn_dropout = 0.,
         ff_dropout = 0.,
-        sparse_3dna_kernel_size = 3
+        sparse_3dna_kernel_size = 3,
+        token_gradient_frac = 0.2
     ):
         super().__init__()
         self.vae = vae
@@ -617,7 +628,8 @@ class NUWA(nn.Module):
             heads = text_enc_heads,
             dim_head = text_enc_dim_head,
             attn_dropout = attn_dropout,
-            ff_dropout = ff_dropout
+            ff_dropout = ff_dropout,
+            token_gradient_frac = token_gradient_frac,
         )
 
         self.video_bos = nn.Parameter(torch.randn(dim))
@@ -642,7 +654,8 @@ class NUWA(nn.Module):
             ff_dropout = ff_dropout,
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
-            sparse_3dna_video_shape = video_shape
+            sparse_3dna_video_shape = video_shape,
+            token_gradient_frac = token_gradient_frac,
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)
