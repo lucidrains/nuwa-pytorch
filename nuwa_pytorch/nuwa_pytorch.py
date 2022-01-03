@@ -43,6 +43,13 @@ def log(t, eps = 1e-20):
 def sigmoid(t):
     return torch.where(t >= 0, 1 / (1 + torch.exp(-t)), t.exp() / (1 + t.exp()))
 
+def gumbel_noise(t):
+    noise = torch.zeros_like(t).uniform_(0, 1)
+    return -log(-log(noise))
+
+def gumbel_sample(t, temperature = 1., dim = -1):
+    return ((t / temperature) + gumbel_noise(t)).argmax(dim = dim)
+
 # gan losses
 
 def hinge_discr_loss(fake, real):
@@ -604,10 +611,8 @@ class NUWA(nn.Module):
             logits = logits[:, -1, :]
 
             filtered_logits = top_k(logits, thres = filter_thres)
-            filtered_logits /= temperature
-            filtered_logits -=  torch.amax(filtered_logits, dim = 1, keepdim = True)
-            probs = F.softmax(filtered_logits, dim = -1)
-            sample = torch.multinomial(probs, 1)
+            sample = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
+            sample = rearrange(sample, 'b -> b 1')
             video_indices = torch.cat((video_indices, sample), dim = 1)
 
         codes = self.vae.codebook[video_indices]
