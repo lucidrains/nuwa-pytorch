@@ -79,6 +79,11 @@ def gumbel_sample(t, temperature = 1., dim = -1):
 def safe_div(numer, denom, eps = 1e-6):
     return numer / (denom + eps)
 
+def stable_softmax(t, dim = -1, alpha = 32 ** 2):
+    t = t / alpha
+    t = t - torch.amax(t, dim = dim, keepdim = True).detach()
+    return (t * alpha).softmax(dim = dim)
+
 # gan losses
 
 def hinge_discr_loss(fake, real):
@@ -293,6 +298,24 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
+class SandwichNorm(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        fn
+    ):
+        super().__init__()
+        self.prenorm = nn.LayerNorm(dim)
+        self.postnorm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        x = self.prenorm(x)
+        x = self.fn(x, **kwargs)
+        x = self.postnorm(x)
+        return x
+
 # helper classes
 
 class FeedForward(nn.Module):
@@ -368,7 +391,7 @@ class Attention(nn.Module):
             mask = torch.ones(i, j, device = device, dtype = torch.bool).triu_(1)
             sim = sim.masked_fill(mask, mask_value)
 
-        attn = sim.softmax(dim = -1)
+        attn = stable_softmax(sim, dim = -1)
         attn = self.dropout(attn)
 
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
@@ -387,7 +410,7 @@ class Sparse3DNA(nn.Module):
     ):
         super().__init__()
         assert kernel_size % 2 == 1, 'kernel size must be odd'
-        inner_dim = dim_head *  heads
+        inner_dim = dim_head * heads
         self.heads = heads
         self.scale = dim_head ** -0.5
 
@@ -517,13 +540,16 @@ class Transformer(nn.Module):
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
-        token_gradient_frac = 0.2
+        token_gradient_frac = 0.2,
+        sandwich_norm = True
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
         self.token_gradient_frac = token_gradient_frac
 
         self.layers = MList([])
+        norm_klass = SandwichNorm if sandwich_norm else PreNorm
+
         for _ in range(depth):
             if sparse_3dna_attn:
                 self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape)
@@ -531,9 +557,9 @@ class Transformer(nn.Module):
                 self_attn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = attn_dropout)
 
             self.layers.append(MList([
-                PreNorm(dim = dim, fn = self_attn),
-                PreNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
-                PreNorm(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout))
+                norm_klass(dim = dim, fn = self_attn),
+                norm_klass(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
+                norm_klass(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout))
             ]))
 
         self.norm = nn.LayerNorm(dim)
