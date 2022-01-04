@@ -144,6 +144,20 @@ class Discriminator(nn.Module):
 
         return self.to_logits(x)
 
+class ResBlock(nn.Module):
+    def __init__(self, chan):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(chan, chan, 3, padding = 1),
+            nn.ReLU(),
+            nn.Conv2d(chan, chan, 3, padding = 1),
+            nn.ReLU(),
+            nn.Conv2d(chan, chan, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x) + x
+
 class VQGanVAE(nn.Module):
     def __init__(
         self,
@@ -157,6 +171,7 @@ class VQGanVAE(nn.Module):
         vq_commitment_weight = 1.,
         l2_recon_loss = False,
         use_hinge_loss = False,
+        num_resnet_blocks = 1,
         **kwargs
     ):
         super().__init__()
@@ -174,8 +189,12 @@ class VQGanVAE(nn.Module):
         dec_dim_pairs = zip(reversed_dims[:-1], reversed_dims[1:])
 
         for _, (enc_dim_in, enc_dim_out), (dec_dim_in, dec_dim_out) in zip(range(num_layers), enc_dim_pairs, dec_dim_pairs):
-            self.encoders.append(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1))
-            self.decoders.append(nn.ConvTranspose2d(dec_dim_in, dec_dim_out, 4, stride = 2, padding = 1))
+            self.encoders.append(nn.Sequential(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
+            self.decoders.append(nn.Sequential(nn.ConvTranspose2d(dec_dim_in, dec_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
+
+        for _ in range(num_resnet_blocks):
+            self.encoders.append(ResBlock(dims[-1]))
+            self.decoders.append(ResBlock(dims[-1]))
 
         self.encoders.insert(0, nn.Conv2d(channels, dim, 3, padding = 1))
         self.decoders.append(nn.Conv2d(dim, channels, 1))
