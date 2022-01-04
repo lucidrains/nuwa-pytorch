@@ -272,7 +272,7 @@ class VQGanVAE(nn.Module):
         norm_grad_wrt_perceptual_loss = grad_layer_wrt_loss(perceptual_loss, last_dec_layer).norm(p = 2)
 
         adaptive_weight = safe_div(norm_grad_wrt_perceptual_loss, norm_grad_wrt_gen_loss)
-        adaptive_weight.clamp_(max = 1e-4)
+        adaptive_weight.clamp_(max = 1e4)
 
         # reconstruction loss
 
