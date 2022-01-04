@@ -436,20 +436,22 @@ class Sparse3DNA(nn.Module):
 
         # precalculate causal mask
 
-        self.causal = causal
-
-        if not causal:
-            return
-
         indices = torch.arange(max_num_tokens)
         shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = max_frames, h = fmap_size, w = fmap_size)
         padded_indices = F.pad(shaped_indices, (kernel_size // 2,) * 6, value = max_num_tokens) # padding has value of max tokens so to be masked out
         unfolded_indices = unfoldNd(padded_indices, kernel_size = kernel_size)
         unfolded_indices = rearrange(unfolded_indices, '1 k n -> n k')
 
-        causal_mask = rearrange(indices, 'n -> n 1') < unfolded_indices
-        causal_mask = F.pad(causal_mask, (1, 0), value = False) # bos tokens never get masked out
-        self.register_buffer('causal_mask', causal_mask)
+        # if causal, compare query and key indices and make sure past cannot see future
+        # if not causal, just mask out the padding
+
+        if causal:
+            mask = rearrange(indices, 'n -> n 1') < unfolded_indices
+        else:
+            mask = unfolded_indices == max_num_tokens
+
+        mask = F.pad(mask, (1, 0), value = False) # bos tokens never get masked out
+        self.register_buffer('mask', mask)
 
     def forward(self, x, mask = None):
         b, n, _, h, device = *x.shape, self.heads, x.device
@@ -506,7 +508,7 @@ class Sparse3DNA(nn.Module):
 
         out = []
 
-        def attend(q, k, v, causal_mask, k_bos, v_bos, kernel_size):
+        def attend(q, k, v, mask, k_bos, v_bos, kernel_size):
             chunk_length = q.shape[1]
 
             k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size), (k, v))
@@ -525,10 +527,10 @@ class Sparse3DNA(nn.Module):
 
             # causal mask
 
-            if exists(causal_mask):
+            if exists(mask):
                 mask_value = -torch.finfo(sim.dtype).max
-                causal_mask = rearrange(causal_mask, 'i j -> 1 i j')
-                sim = sim.masked_fill(causal_mask, mask_value)
+                mask = rearrange(mask, 'i j -> 1 i j')
+                sim = sim.masked_fill(mask, mask_value)
 
             # attention
 
@@ -546,13 +548,12 @@ class Sparse3DNA(nn.Module):
 
         q_chunks = q.split(chunk_size, dim = 1)
 
-        if self.causal:
-            causal_mask = self.causal_mask[:(n - 1)]
-            causal_mask_chunks = causal_mask.split(chunk_size, dim = 0)
+        mask = self.mask[:(n - 1)]
+        mask_chunks = mask.split(chunk_size, dim = 0)
 
-        for ind in range(len(q_chunks)):
+        for ind, (q_chunk, mask_chunk) in enumerate(zip(q_chunks, mask_chunks)):
             q_chunk = q_chunks[ind]
-            causal_mask_chunk = causal_mask_chunks[ind] if self.causal else None
+            mask_chunk = mask_chunks[ind]
 
             # slice the keys and values to the appropriate frames, accounting for padding along frames dimension
 
@@ -568,10 +569,10 @@ class Sparse3DNA(nn.Module):
                 q = q_chunk,
                 k = k_slice,
                 v = v_slice,
+                mask = mask_chunk,
                 k_bos = k_bos,
                 v_bos = v_bos,
                 kernel_size = kernel_size,
-                causal_mask = causal_mask_chunk
             )
 
             out.append(out_chunk)
