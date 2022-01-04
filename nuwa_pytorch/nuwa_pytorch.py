@@ -270,7 +270,9 @@ class VQGanVAE(nn.Module):
 
         norm_grad_wrt_gen_loss = grad_layer_wrt_loss(gen_loss, last_dec_layer).norm(p = 2)
         norm_grad_wrt_perceptual_loss = grad_layer_wrt_loss(perceptual_loss, last_dec_layer).norm(p = 2)
+
         adaptive_weight = safe_div(norm_grad_wrt_perceptual_loss, norm_grad_wrt_gen_loss)
+        adaptive_weight.clamp_(max = 1e-4)
 
         # reconstruction loss
 
@@ -407,6 +409,7 @@ class Sparse3DNA(nn.Module):
         heads = 8,
         dim_head = 64,
         dropout = 0.,
+        query_num_frames_chunk = None
     ):
         super().__init__()
         assert kernel_size % 2 == 1, 'kernel size must be odd'
@@ -422,13 +425,18 @@ class Sparse3DNA(nn.Module):
         self.kernel_size = kernel_size
         self.video_shape = video_shape
 
+        max_frames, fmap_size, _ = video_shape
         max_num_tokens = torch.empty(video_shape).numel()
         self.max_num_tokens = max_num_tokens
+
+        # how many query tokens to process at once to limit peak memory usage, by multiple of frame tokens (fmap_size ** 2)
+
+        self.query_num_frames_chunk = default(query_num_frames_chunk, max_frames)
 
         # precalculate causal mask
 
         indices = torch.arange(max_num_tokens)
-        shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = video_shape[0], h = video_shape[1], w = video_shape[2])
+        shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = max_frames, h = fmap_size, w = fmap_size)
         padded_indices = F.pad(shaped_indices, (kernel_size // 2,) * 6, value = max_num_tokens) # padding has value of max tokens so to be masked out
         unfolded_indices = unfoldNd(padded_indices, kernel_size = kernel_size)
         unfolded_indices = rearrange(unfolded_indices, '1 k n -> n k')
@@ -480,38 +488,91 @@ class Sparse3DNA(nn.Module):
         # compute keys and values
 
         (k_bos, k), (v_bos, v) = map(lambda t: (t[:, :1], t[:, 1:]), (k, v))
+
+        # reshape keys and values to video and add appropriate padding along all dimensions (frames, height, width)
+
+        video_padding = kernel_size // 2
         k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
+        k, v = map(lambda t: F.pad(t, (video_padding,) * 6), (k, v))
 
-        k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size, padding = kernel_size // 2), (k, v))
-        k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
-        k, v = map(lambda t: t[:, :(n - 1)], (k, v))
+        # put the attention processing code in a function
+        # to allow for processing queries in chunks of frames
 
-        # append bos keys and values
+        out = []
 
-        k_bos, v_bos = map(lambda t: repeat(t, 'b 1 d -> b n 1 d', n = k.shape[1]), (k_bos, v_bos))
-        k = torch.cat((k_bos, k), dim = 2)
-        v = torch.cat((v_bos, v), dim = 2)
+        def attend(q, k, v, causal_mask, k_bos, v_bos, kernel_size):
+            chunk_length = q.shape[1]
 
-        # calculate sim
+            k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size), (k, v))
+            k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
+            k, v = map(lambda t: t[:, :chunk_length], (k, v))
 
-        sim = einsum('b i d, b i j d -> b i j', q, k)
+            # append bos keys and values
 
-        # causal mask
+            k_bos, v_bos = map(lambda t: repeat(t, 'b 1 d -> b n 1 d', n = k.shape[1]), (k_bos, v_bos))
+            k = torch.cat((k_bos, k), dim = 2)
+            v = torch.cat((v_bos, v), dim = 2)
 
-        i, j = sim.shape[-2:]
-        causal_mask = self.causal_mask[:i, :j]
-        causal_mask = repeat(causal_mask, 'i j -> b i j', b = b * h)
+            # calculate sim
 
-        sim = sim.masked_fill(causal_mask, -torch.finfo(sim.dtype).max)
+            sim = einsum('b i d, b i j d -> b i j', q, k)
 
-        # attention
+            # causal mask
 
-        attn = sim.softmax(dim = -1)
-        attn = self.dropout(attn)
+            mask_value = -torch.finfo(sim.dtype).max
+            causal_mask = rearrange(causal_mask, 'i j -> 1 i j')
 
-        # aggregate values
+            sim = sim.masked_fill(causal_mask, mask_value)
 
-        out = einsum('b i j, b i j d -> b i d', attn, v)
+            # attention
+
+            attn = sim.softmax(dim = -1)
+            attn = self.dropout(attn)
+
+            # aggregate values
+
+            return einsum('b i j, b i j d -> b i d', attn, v)
+
+        # process queries in chunks
+
+        frames_per_chunk = min(self.query_num_frames_chunk, num_frames)
+        chunk_size = frames_per_chunk * tokens_per_frame
+
+        for ind, q_chunk in enumerate(q.split(chunk_size, dim = 1)):
+
+            # slice the keys and values to the appropriate frames, accounting for padding along frames dimension
+
+            kv_start_pos = ind
+            kv_end_pos = kv_start_pos + (ind + frames_per_chunk + video_padding * 2)
+            kv_frame_range = slice(kv_start_pos, kv_end_pos)
+
+            k_slice, v_slice = map(lambda t: t[:, :, kv_frame_range], (k, v))
+
+            # slice causal mask to the appropriate query chunk windows - no padding need to be accounted for
+
+            mask_start_pos = ind * chunk_size
+            mask_end_pos = mask_start_pos + q_chunk.shape[1]
+            mask_range = slice(mask_start_pos, mask_end_pos)
+
+            causal_mask_slice = self.causal_mask[mask_range]
+
+            # calculate output chunk
+
+            out_chunk = attend(
+                q = q_chunk,
+                k = k_slice,
+                v = v_slice,
+                causal_mask = causal_mask_slice,
+                k_bos = k_bos,
+                v_bos = v_bos,
+                kernel_size = kernel_size
+            )
+
+            out.append(out_chunk)
+
+        # combine all chunks
+
+        out = torch.cat(out, dim = 1)
 
         # append bos value
 
@@ -540,6 +601,7 @@ class Transformer(nn.Module):
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
+        sparse_3dna_query_num_frames_chunk = None,
         token_gradient_frac = 0.2,
         sandwich_norm = True
     ):
@@ -552,7 +614,7 @@ class Transformer(nn.Module):
 
         for _ in range(depth):
             if sparse_3dna_attn:
-                self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape)
+                self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape, query_num_frames_chunk = sparse_3dna_query_num_frames_chunk)
             else:
                 self_attn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = attn_dropout)
 
@@ -637,7 +699,8 @@ class NUWA(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         sparse_3dna_kernel_size = 3,
-        token_gradient_frac = 0.2
+        token_gradient_frac = 0.2,
+        sparse_3dna_query_num_frames_chunk = None
     ):
         super().__init__()
         self.vae = vae
@@ -681,6 +744,7 @@ class NUWA(nn.Module):
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_video_shape = video_shape,
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
             token_gradient_frac = token_gradient_frac,
         )
 
