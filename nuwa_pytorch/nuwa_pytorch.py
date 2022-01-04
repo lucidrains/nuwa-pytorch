@@ -246,12 +246,6 @@ class VQGanVAE(nn.Module):
 
         assert return_loss ^ return_discr_loss, 'you should either return autoencoder loss or discriminator loss, but not both'
 
-        # lpips
-
-        img_vgg_feats = self.vgg(img)
-        recon_vgg_feats = self.vgg(fmap)
-        perceptual_loss = F.mse_loss(img_vgg_feats, recon_vgg_feats)
-
         # whether to return discriminator loss
 
         if return_discr_loss:
@@ -259,6 +253,12 @@ class VQGanVAE(nn.Module):
             fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
             discr_loss = self.discr_loss(fmap_discr_logits, img_discr_logits)
             return discr_loss
+
+        # perceptual loss
+
+        img_vgg_feats = self.vgg(img)
+        recon_vgg_feats = self.vgg(fmap)
+        perceptual_loss = F.mse_loss(img_vgg_feats, recon_vgg_feats)
 
         # generator loss
 
