@@ -3,6 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'nuwa-pytorch',
   packages = find_packages(exclude=[]),
+  include_package_data = True,
   version = '0.0.12',
   license='MIT',
   description = 'NÜWA - Pytorch',
