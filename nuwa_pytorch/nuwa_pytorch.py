@@ -538,7 +538,12 @@ class Sparse3DNA(nn.Module):
         frames_per_chunk = min(self.query_num_frames_chunk, num_frames)
         chunk_size = frames_per_chunk * tokens_per_frame
 
-        for ind, q_chunk in enumerate(q.split(chunk_size, dim = 1)):
+        q_chunks = q.split(chunk_size, dim = 1)
+
+        causal_mask = self.causal_mask[:(n - 1)]
+        causal_mask_chunks = causal_mask.split(chunk_size, dim = 0)
+
+        for ind, (q_chunk, causal_mask_chunk) in enumerate(zip(q_chunks, causal_mask_chunks)):
 
             # slice the keys and values to the appropriate frames, accounting for padding along frames dimension
 
@@ -548,21 +553,13 @@ class Sparse3DNA(nn.Module):
 
             k_slice, v_slice = map(lambda t: t[:, :, kv_frame_range], (k, v))
 
-            # slice causal mask to the appropriate query chunk windows - no padding need to be accounted for
-
-            mask_start_pos = ind * chunk_size
-            mask_end_pos = mask_start_pos + q_chunk.shape[1]
-            mask_range = slice(mask_start_pos, mask_end_pos)
-
-            causal_mask_slice = self.causal_mask[mask_range]
-
             # calculate output chunk
 
             out_chunk = attend(
                 q = q_chunk,
                 k = k_slice,
                 v = v_slice,
-                causal_mask = causal_mask_slice,
+                causal_mask = causal_mask_chunk,
                 k_bos = k_bos,
                 v_bos = v_bos,
                 kernel_size = kernel_size
