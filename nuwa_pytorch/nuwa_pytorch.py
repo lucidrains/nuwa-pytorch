@@ -409,6 +409,7 @@ class Sparse3DNA(nn.Module):
         heads = 8,
         dim_head = 64,
         dropout = 0.,
+        causal = False,
         query_num_frames_chunk = None
     ):
         super().__init__()
@@ -434,6 +435,11 @@ class Sparse3DNA(nn.Module):
         self.query_num_frames_chunk = default(query_num_frames_chunk, max_frames)
 
         # precalculate causal mask
+
+        self.causal = causal
+
+        if not causal:
+            return
 
         indices = torch.arange(max_num_tokens)
         shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = max_frames, h = fmap_size, w = fmap_size)
@@ -519,10 +525,10 @@ class Sparse3DNA(nn.Module):
 
             # causal mask
 
-            mask_value = -torch.finfo(sim.dtype).max
-            causal_mask = rearrange(causal_mask, 'i j -> 1 i j')
-
-            sim = sim.masked_fill(causal_mask, mask_value)
+            if exists(causal_mask):
+                mask_value = -torch.finfo(sim.dtype).max
+                causal_mask = rearrange(causal_mask, 'i j -> 1 i j')
+                sim = sim.masked_fill(causal_mask, mask_value)
 
             # attention
 
@@ -540,10 +546,13 @@ class Sparse3DNA(nn.Module):
 
         q_chunks = q.split(chunk_size, dim = 1)
 
-        causal_mask = self.causal_mask[:(n - 1)]
-        causal_mask_chunks = causal_mask.split(chunk_size, dim = 0)
+        if self.causal:
+            causal_mask = self.causal_mask[:(n - 1)]
+            causal_mask_chunks = causal_mask.split(chunk_size, dim = 0)
 
-        for ind, (q_chunk, causal_mask_chunk) in enumerate(zip(q_chunks, causal_mask_chunks)):
+        for ind in range(len(q_chunks)):
+            q_chunk = q_chunks[ind]
+            causal_mask_chunk = causal_mask_chunks[ind] if self.causal else None
 
             # slice the keys and values to the appropriate frames, accounting for padding along frames dimension
 
@@ -559,10 +568,10 @@ class Sparse3DNA(nn.Module):
                 q = q_chunk,
                 k = k_slice,
                 v = v_slice,
-                causal_mask = causal_mask_chunk,
                 k_bos = k_bos,
                 v_bos = v_bos,
-                kernel_size = kernel_size
+                kernel_size = kernel_size,
+                causal_mask = causal_mask_chunk
             )
 
             out.append(out_chunk)
@@ -611,7 +620,7 @@ class Transformer(nn.Module):
 
         for _ in range(depth):
             if sparse_3dna_attn:
-                self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape, query_num_frames_chunk = sparse_3dna_query_num_frames_chunk)
+                self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, causal = causal, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape, query_num_frames_chunk = sparse_3dna_query_num_frames_chunk)
             else:
                 self_attn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = attn_dropout)
 
