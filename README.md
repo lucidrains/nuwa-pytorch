@@ -108,6 +108,7 @@ video = nuwa.generate(text = text, text_mask = mask) # (1, 5, 3, 256, 256)
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] investigate custom attention layouts in microsoft deepspeed sparse attention (using triton)
 - [ ] add all stability tricks from cogview paper by default, as well as cosine sim attention from swinv2 as an option
+- [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
 
 ## Citations
 
