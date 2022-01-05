@@ -84,6 +84,9 @@ def stable_softmax(t, dim = -1, alpha = 32 ** 2):
     t = t - torch.amax(t, dim = dim, keepdim = True).detach()
     return (t * alpha).softmax(dim = dim)
 
+def prob_mask_like(shape, prob, device):
+    return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+
 # gan losses
 
 def hinge_discr_loss(fake, real):
@@ -304,6 +307,15 @@ class VQGanVAE(nn.Module):
 
 # normalizations
 
+class StableLayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x):
+        x = x / x.amax(dim = -1, keepdim = True).detach()
+        return self.norm(x)
+
 class PreNorm(nn.Module):
     def __init__(
         self,
@@ -376,6 +388,10 @@ class Attention(nn.Module):
         self.heads = heads
         self.causal = causal
         self.scale = dim_head ** -0.5
+
+        self.null_k = nn.Parameter(torch.randn(1, heads, 1, dim_head))
+        self.null_v = nn.Parameter(torch.randn(1, heads, 1, dim_head))
+
         self.dropout = nn.Dropout(dropout)
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
@@ -396,24 +412,41 @@ class Attention(nn.Module):
         qkv = (self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
 
+        # add null key / values, needed for condition dropout
+
+        k = torch.cat((self.null_k, k), dim = -2)
+        v = torch.cat((self.null_v, v), dim = -2)
+
+        # scale
+
         q = q * self.scale
+
+        # similarity
+
         sim = einsum('b h i d, b h j d -> b h i j', q, k)
+
+        # masking
 
         mask_value = -torch.finfo(x.dtype).max
 
         key_mask = mask if not has_context else context_mask
 
         if exists(key_mask):
+            key_mask = F.pad(key_mask, (1, 0), value = True) # always pay attention to null key / value
             key_mask = rearrange(key_mask, 'b j -> b 1 1 j')
             sim = sim.masked_fill(~key_mask, mask_value)
 
         if self.causal:
             i, j = sim.shape[-2:]
-            mask = torch.ones(i, j, device = device, dtype = torch.bool).triu_(1)
+            mask = torch.ones(i, j, device = device, dtype = torch.bool).triu_(j - i + 1)
             sim = sim.masked_fill(mask, mask_value)
+
+        # attention
 
         attn = stable_softmax(sim, dim = -1)
         attn = self.dropout(attn)
+
+        # aggregate, merge, and combine heads
 
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
@@ -628,12 +661,10 @@ class Transformer(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
-        token_gradient_frac = 0.2,
         sandwich_norm = True
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
-        self.token_gradient_frac = token_gradient_frac
 
         self.layers = MList([])
         norm_klass = SandwichNorm if sandwich_norm else PreNorm
@@ -650,7 +681,7 @@ class Transformer(nn.Module):
                 norm_klass(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout))
             ]))
 
-        self.norm = nn.LayerNorm(dim)
+        self.norm = StableLayerNorm(dim)
 
     def forward(
         self,
@@ -659,8 +690,6 @@ class Transformer(nn.Module):
         context = None,
         context_mask = None
     ):
-        x = frac_gradient(x, self.token_gradient_frac)
-
         for attn, cross_attn, ff in self.layers:
             x = attn(x, mask = mask) + x
 
@@ -670,6 +699,22 @@ class Transformer(nn.Module):
             x = ff(x) + x
 
         return self.norm(x)
+
+# embeddings
+
+class Embedding(nn.Module):
+    def __init__(self, *shape, frac_gradient = 1.):
+        super().__init__()
+        self.frac_gradient = frac_gradient
+        self.embed = nn.Embedding(*shape)
+
+    def forward(self, x):
+        x = self.embed(x)
+
+        if self.training and self.frac_gradient < 1:
+            x = frac_gradient(x, self.frac_gradient)
+
+        return x
 
 # positional embedding
 
@@ -725,7 +770,7 @@ class NUWA(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         sparse_3dna_kernel_size = 3,
-        token_gradient_frac = 0.2,
+        embed_gradient_frac = 0.2,
         sparse_3dna_query_num_frames_chunk = None
     ):
         super().__init__()
@@ -734,8 +779,8 @@ class NUWA(nn.Module):
         num_image_tokens = vae.codebook_size
 
         self.text_max_seq_len = text_max_seq_len
-        self.text_embedding = nn.Embedding(text_num_tokens, dim)
-        self.text_pos_embedding = nn.Embedding(text_max_seq_len, dim)
+        self.text_embedding = Embedding(text_num_tokens, dim, frac_gradient = embed_gradient_frac)
+        self.text_pos_embedding = Embedding(text_max_seq_len, dim)
 
         self.text_transformer = Transformer(
             dim = dim,
@@ -743,12 +788,11 @@ class NUWA(nn.Module):
             heads = text_enc_heads,
             dim_head = text_enc_dim_head,
             attn_dropout = attn_dropout,
-            ff_dropout = ff_dropout,
-            token_gradient_frac = token_gradient_frac,
+            ff_dropout = ff_dropout
         )
 
         self.video_bos = nn.Parameter(torch.randn(dim))
-        self.image_embedding = nn.Embedding(num_image_tokens, dim)
+        self.image_embedding = Embedding(num_image_tokens, dim, frac_gradient = embed_gradient_frac)
 
         fmap_size = image_size // (2 ** vae_num_layers)
 
@@ -770,8 +814,7 @@ class NUWA(nn.Module):
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_video_shape = video_shape,
-            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
-            token_gradient_frac = token_gradient_frac,
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)
@@ -795,13 +838,15 @@ class NUWA(nn.Module):
         self,
         *,
         text,
-        text_mask = None,
         filter_thres = 0.9,
         temperature = 1.,
-        decode_max_batchsize = 10
+        decode_max_batchsize = 10,
+        cond_scale = 2.
     ):
         batch, seq_len, device = *text.shape, text.device
-        text_embeds = self.embed_text(text, mask = text_mask)
+
+        text_mask = text == 0
+        text_embeds = self.embed_text(text)
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
 
@@ -822,6 +867,19 @@ class NUWA(nn.Module):
             )
 
             logits = self.to_logits(frame_embeddings)
+
+            if cond_scale != 1:
+                # discovery by Katherine Crowson
+                # https://twitter.com/RiversHaveWings/status/1478093658716966912
+                uncond_frame_embeddings = self.video_transformer(
+                    frame_embeddings,
+                    context = text_embeds,
+                    context_mask = torch.zeros_like(text_mask).bool()
+                )
+
+                uncond_logits = self.to_logits(uncond_frame_embeddings)
+                logits = uncond_logits + (logits - uncond_logits) * cond_scale
+
             logits = logits[:, -1, :]
 
             filtered_logits = top_k(logits, thres = filter_thres)
@@ -842,10 +900,12 @@ class NUWA(nn.Module):
         text,
         image = None,
         video = None,
-        text_mask = None,
-        return_loss = False
+        return_loss = False,
+        cond_dropout_prob = 0.2
     ):
         batch, seq_len, device = *text.shape, text.device
+
+        text_mask = text == 0
         text_embeds = self.embed_text(text, mask = text_mask)
 
         frame_indices = self.vae.get_video_indices(video)
@@ -857,6 +917,12 @@ class NUWA(nn.Module):
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
         frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
+
+        if self.training and cond_dropout_prob > 0:
+            # dropout condition randomly
+            # presented in https://openreview.net/forum?id=qw8AKxfYbI
+            uncond_mask = prob_mask_like((batch,), cond_dropout_prob, device = device)
+            text_mask *= rearrange(~uncond_mask, 'b -> b 1')
 
         frame_embeddings = self.video_transformer(
             frame_embeddings,
