@@ -110,6 +110,7 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [ ] make VQGan able to accept custom VGG for LPAPs loss (audio)
 - [ ] add reversible networks and feedforward chunking, a la Reformer, to save on memory
 - [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
+- [ ] add shift token in decoder for cheap powerful RPE
 
 ## Citations
 
