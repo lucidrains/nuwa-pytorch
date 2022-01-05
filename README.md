@@ -78,7 +78,6 @@ video = torch.randn(1, 5, 3, 256, 256).cuda()
 loss = nuwa(
     text = text,
     video = video,
-    text_mask = mask,
     return_loss = True
 )
 
@@ -88,7 +87,7 @@ loss.backward()
 
 # then you can generate a video from text
 
-video = nuwa.generate(text = text, text_mask = mask) # (1, 5, 3, 256, 256)
+video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 
 ```
 
@@ -101,13 +100,13 @@ video = nuwa.generate(text = text, text_mask = mask) # (1, 5, 3, 256, 256)
 - [x] offer new vqvae improvements (orthogonal reg and smaller codebook dimensions)
 - [x] batch video tokens -> vae during video generation, to prevent oom
 - [x] query chunking in 3dna attention, to put a cap on peak memory
-- [ ] flesh out VAE resnet blocks, offer some choices
+- [x] flesh out VAE resnet blocks, offer some choices
+- [x] add all stability tricks from cogview paper by default
+- [ ] add cosine sim attention from swinv2 as an option
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
 - [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
-- [ ] investigate custom attention layouts in microsoft deepspeed sparse attention (using triton)
-- [ ] add all stability tricks from cogview paper by default, as well as cosine sim attention from swinv2 as an option
 - [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
 - [ ] make VQGan able to accept custom VGG for LPAPs loss (audio)
 - [ ] add reversible networks and feedforward chunking, a la Reformer, to save on memory
@@ -134,5 +133,22 @@ video = nuwa.generate(text = text, text_mask = mask) # (1, 5, 3, 256, 256)
     eprint  = {2105.13290},
     archivePrefix = {arXiv},
     primaryClass = {cs.CV}
+}
+```
+
+```bibtex
+@inproceedings{ho2021classifierfree,
+    title   = {Classifier-Free Diffusion Guidance},
+    author  = {Jonathan Ho and Tim Salimans},
+    booktitle = {NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications},
+    year    = {2021},
+    url     = {https://openreview.net/forum?id=qw8AKxfYbI}
+}
+```
+
+```bibtex
+@misc{crowson2022,
+    author  = {Katherine Crowson},
+    url     = {https://twitter.com/RiversHaveWings/status/1478093658716966912}
 }
 ```
