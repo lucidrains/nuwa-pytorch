@@ -101,13 +101,13 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [x] query chunking in 3dna attention, to put a cap on peak memory
 - [x] flesh out VAE resnet blocks, offer some choices
 - [x] add all stability tricks from cogview paper by default
+- [x] make VQGan able to accept custom VGG for LPAPs loss (audio)
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
 - [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
-- [ ] make VQGan able to accept custom VGG for LPAPs loss (audio)
 - [ ] add reversible networks and feedforward chunking, a la Reformer, to save on memory
 - [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
 - [ ] add shift token in decoder for cheap powerful RPE

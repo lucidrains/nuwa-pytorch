@@ -175,6 +175,7 @@ class VQGanVAE(nn.Module):
         l2_recon_loss = False,
         use_hinge_loss = False,
         num_resnet_blocks = 1,
+        vgg = None,
         **kwargs
     ):
         super().__init__()
@@ -217,8 +218,11 @@ class VQGanVAE(nn.Module):
 
         # preceptual loss
 
-        self.vgg = torchvision.models.vgg16(pretrained = True)
-        self.vgg.classifier = nn.Sequential(*self.vgg.classifier[:-2])
+        if exists(vgg):
+            self.vgg = vgg
+        else:
+            self.vgg = torchvision.models.vgg16(pretrained = True)
+            self.vgg.classifier = nn.Sequential(*self.vgg.classifier[:-2])
 
         # gan related losses
 
