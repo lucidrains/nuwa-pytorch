@@ -845,7 +845,7 @@ class NUWA(nn.Module):
     ):
         batch, seq_len, device = *text.shape, text.device
 
-        text_mask = text == 0
+        text_mask = text != 0
         text_embeds = self.embed_text(text)
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
@@ -905,7 +905,7 @@ class NUWA(nn.Module):
     ):
         batch, seq_len, device = *text.shape, text.device
 
-        text_mask = text == 0
+        text_mask = text != 0
         text_embeds = self.embed_text(text, mask = text_mask)
 
         frame_indices = self.vae.get_video_indices(video)
