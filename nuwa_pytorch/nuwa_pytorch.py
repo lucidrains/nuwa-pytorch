@@ -362,10 +362,13 @@ class FeedForward(nn.Module):
         *,
         dim,
         mult = 4,
-        dropout = 0.
+        dropout = 0.,
+        chunk_size = None,  # chunk size to process feedforward, along sequence length, from Reformer paper. None means do not chunk
     ):
         super().__init__()
         inner_dim = int(dim * mult)
+        self.chunk_size = chunk_size
+
         self.net = nn.Sequential(
             nn.Linear(dim, inner_dim),
             nn.GELU(),
@@ -374,7 +377,12 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, x):
-        return self.net(x)
+        if not exists(self.chunk_size):
+            return self.net(x)
+
+        x_chunks = x.split(self.chunk_size, dim = -2)
+        out_chunks = [self.net(c) for c in x_chunks]
+        return torch.cat(out_chunks, dim = -2)
 
 # attention classes
 
@@ -666,6 +674,7 @@ class Transformer(nn.Module):
         cross_attend = False,
         attn_dropout = 0.,
         ff_dropout = 0.,
+        ff_chunk_size = None,
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
@@ -705,7 +714,7 @@ class Transformer(nn.Module):
             self.layers.append(MList([
                 norm_klass(dim = dim, fn = self_attn),
                 norm_klass(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
-                norm_klass(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout))
+                norm_klass(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size))
             ]))
 
         self.norm = StableLayerNorm(dim)
@@ -796,10 +805,11 @@ class NUWA(nn.Module):
         dec_heads = 8,
         attn_dropout = 0.,
         ff_dropout = 0.,
+        ff_chunk_size = None,
         embed_gradient_frac = 0.2,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
-        sparse_3dna_dilation = 1
+        sparse_3dna_dilation = 1,
     ):
         super().__init__()
         self.vae = vae
@@ -843,6 +853,7 @@ class NUWA(nn.Module):
             cross_attend = True,
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
+            ff_chunk_size = ff_chunk_size,
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_video_shape = video_shape,
