@@ -3,13 +3,14 @@ import torch
 from torch import nn, einsum
 from torch.autograd import grad
 import torch.nn.functional as F
+import torchvision
 
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 
 from vector_quantize_pytorch import VectorQuantize as VQ
 
-import torchvision
+from nuwa_pytorch.reversible import ReversibleSequence
 
 from unfoldNd import unfoldNd
 
@@ -462,6 +463,7 @@ class Sparse3DNA(nn.Module):
         dim,
         video_shape,
         kernel_size = 3,
+        dilation = 1,
         heads = 8,
         dim_head = 64,
         dropout = 0.,
@@ -479,7 +481,9 @@ class Sparse3DNA(nn.Module):
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
+        self.dilation = dilation
         self.kernel_size = kernel_size
+        self.video_padding = dilation * (kernel_size - 1) // 2
         self.video_shape = video_shape
 
         max_frames, fmap_size, _ = video_shape
@@ -494,8 +498,8 @@ class Sparse3DNA(nn.Module):
 
         indices = torch.arange(max_num_tokens)
         shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = max_frames, h = fmap_size, w = fmap_size)
-        padded_indices = F.pad(shaped_indices, (kernel_size // 2,) * 6, value = max_num_tokens) # padding has value of max tokens so to be masked out
-        unfolded_indices = unfoldNd(padded_indices, kernel_size = kernel_size)
+        padded_indices = F.pad(shaped_indices, (self.video_padding,) * 6, value = max_num_tokens) # padding has value of max tokens so to be masked out
+        unfolded_indices = unfoldNd(padded_indices, kernel_size = kernel_size, dilation = dilation)
         unfolded_indices = rearrange(unfolded_indices, '1 k n -> n k')
 
         # if causal, compare query and key indices and make sure past cannot see future
@@ -514,7 +518,9 @@ class Sparse3DNA(nn.Module):
 
         # more variables
 
+        dilation = self.dilation
         kernel_size = self.kernel_size
+        video_padding = self.video_padding
         fmap_size = self.video_shape[1]
 
         bos_only = n == 1
@@ -555,7 +561,6 @@ class Sparse3DNA(nn.Module):
 
         # reshape keys and values to video and add appropriate padding along all dimensions (frames, height, width)
 
-        video_padding = kernel_size // 2
         k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
         k, v = map(lambda t: F.pad(t, (video_padding,) * 6), (k, v))
 
@@ -567,7 +572,7 @@ class Sparse3DNA(nn.Module):
         def attend(q, k, v, mask, k_bos, v_bos, kernel_size):
             chunk_length = q.shape[1]
 
-            k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size), (k, v))
+            k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size, dilation = dilation), (k, v))
             k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
             k, v = map(lambda t: t[:, :chunk_length], (k, v))
 
@@ -665,6 +670,7 @@ class Transformer(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilations = (1,),
         sandwich_norm = True
     ):
         super().__init__()
@@ -673,11 +679,28 @@ class Transformer(nn.Module):
         self.layers = MList([])
         norm_klass = SandwichNorm if sandwich_norm else PreNorm
 
-        for _ in range(depth):
+        for ind in range(depth):
             if sparse_3dna_attn:
-                self_attn = Sparse3DNA(dim = dim, heads = heads, dim_head = dim_head, causal = causal, kernel_size = sparse_3dna_kernel_size, video_shape = sparse_3dna_video_shape, query_num_frames_chunk = sparse_3dna_query_num_frames_chunk)
+                dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+
+                self_attn = Sparse3DNA(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    causal = causal,
+                    kernel_size = sparse_3dna_kernel_size,
+                    dilation = dilation,
+                    video_shape = sparse_3dna_video_shape,
+                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                )
             else:
-                self_attn = Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = attn_dropout)
+                self_attn = Attention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    causal = causal,
+                    dropout = attn_dropout
+                )
 
             self.layers.append(MList([
                 norm_klass(dim = dim, fn = self_attn),
@@ -773,9 +796,10 @@ class NUWA(nn.Module):
         dec_heads = 8,
         attn_dropout = 0.,
         ff_dropout = 0.,
-        sparse_3dna_kernel_size = 3,
         embed_gradient_frac = 0.2,
-        sparse_3dna_query_num_frames_chunk = None
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilation = 1
     ):
         super().__init__()
         self.vae = vae
@@ -806,6 +830,10 @@ class NUWA(nn.Module):
 
         self.video_pos_emb = AxialPositionalEmbedding(dim, shape = video_shape)
 
+        # cycle dilation for sparse 3d-nearby attention
+
+        sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
+
         self.video_transformer = Transformer(
             dim = dim,
             depth = dec_depth,
@@ -818,6 +846,7 @@ class NUWA(nn.Module):
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_video_shape = video_shape,
+            sparse_3dna_dilations = sparse_3dna_dilations,
             sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
         )
 
