@@ -111,6 +111,7 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [ ] add reversible networks and feedforward chunking, a la Reformer, to save on memory
 - [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
 - [ ] add shift token in decoder for cheap powerful RPE
+- [ ] support kernel sizes different along each dimension for sparse 3dna
 
 ## Citations
 
