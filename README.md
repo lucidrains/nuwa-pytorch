@@ -117,6 +117,7 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [x] add feedforward chunking
 - [x] add shift token in decoder for cheap powerful RPE
 - [x] add reversible networks, to save on memory on depth
+- [x] support kernel sizes different along each dimension for sparse 3dna
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
@@ -124,7 +125,6 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
 - [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
-- [ ] support kernel sizes different along each dimension for sparse 3dna
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
