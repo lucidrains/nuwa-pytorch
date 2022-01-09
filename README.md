@@ -64,21 +64,21 @@ vae = VQGanVAE(
 nuwa = NUWA(
     vae = vae,
     dim = 512,
-    text_num_tokens = 20000,           # number of text tokens
-    text_enc_depth = 12,               # text encoder depth
-    text_enc_heads = 8,                # number of attention heads for encoder
-    text_max_seq_len = 256,            # max sequence length of text conditioning tokens (keep at 256 as in paper, or shorter, if your text is not that long)
-    max_video_frames = 10,             # number of video frames
-    image_size = 256,                  # size of each frame of video
-    dec_depth = 64,                    # video decoder depth
-    dec_heads = 8,                     # number of attention heads in decoder
-    dec_reversible = True,             # reversible networks - from reformer, decoupling memory usage from depth
-    enc_reversible = True,             # reversible encoders, if you need it
-    attn_dropout = 0.05,               # dropout for attention
-    ff_dropout = 0.05,                 # dropout for feedforward
-    sparse_3dna_kernel_size = 3,       # kernel size of the sparse 3dna attention
-    sparse_3dna_dilation = (1, 2, 4),  # cycle dilation of 3d conv attention in decoder, for more range
-    shift_video_tokens = True          # cheap relative positions for sparse 3dna transformer, by shifting along spatial dimensions by one
+    text_num_tokens = 20000,                # number of text tokens
+    text_enc_depth = 12,                    # text encoder depth
+    text_enc_heads = 8,                     # number of attention heads for encoder
+    text_max_seq_len = 256,                 # max sequence length of text conditioning tokens (keep at 256 as in paper, or shorter, if your text is not that long)
+    max_video_frames = 10,                  # number of video frames
+    image_size = 256,                       # size of each frame of video
+    dec_depth = 64,                         # video decoder depth
+    dec_heads = 8,                          # number of attention heads in decoder
+    dec_reversible = True,                  # reversible networks - from reformer, decoupling memory usage from depth
+    enc_reversible = True,                  # reversible encoders, if you need it
+    attn_dropout = 0.05,                    # dropout for attention
+    ff_dropout = 0.05,                      # dropout for feedforward
+    sparse_3dna_kernel_size = (5, 3, 3),    # kernel size of the sparse 3dna attention. can be a single value for frame, height, width, or different values (to simulate axial attention, etc)
+    sparse_3dna_dilation = (1, 2, 4),       # cycle dilation of 3d conv attention in decoder, for more range
+    shift_video_tokens = True               # cheap relative positions for sparse 3dna transformer, by shifting along spatial dimensions by one
 ).cuda()
 
 # data

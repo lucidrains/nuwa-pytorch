@@ -26,6 +26,12 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+def cast_tuple(val, size = 1):
+    return val if isinstance(val, tuple) else (val,) * size
+
+def calc_same_padding(kernel_size, dilation = 1):
+    return dilation * (kernel_size - 1) // 2
+
 # keyword argument helpers
 
 def pick_and_pop(keys, d):
@@ -549,7 +555,6 @@ class Sparse3DNA(nn.Module):
         query_num_frames_chunk = None
     ):
         super().__init__()
-        assert kernel_size % 2 == 1, 'kernel size must be odd'
         inner_dim = dim_head * heads
         self.heads = heads
         self.scale = dim_head ** -0.5
@@ -559,11 +564,24 @@ class Sparse3DNA(nn.Module):
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
-        self.dilation = dilation
-        self.kernel_size = kernel_size
-        self.video_padding = dilation * (kernel_size - 1) // 2
-        self.video_shape = video_shape
+        self.dilation = cast_tuple(dilation, size = 3)
 
+        self.kernel_size = cast_tuple(kernel_size, size = 3)
+        assert all(map(lambda n: n % 2 == 1, self.kernel_size)), 'kernel size must be odd'
+
+        self.kernel_numel = self.kernel_size[0] * self.kernel_size[1] * self.kernel_size[2]
+
+        # calculate padding
+
+        self.padding_frame = calc_same_padding(self.kernel_size[0], self.dilation[0])
+        self.padding_height = calc_same_padding(self.kernel_size[1], self.dilation[1])
+        self.padding_width = calc_same_padding(self.kernel_size[2], self.dilation[2])
+
+        self.video_padding = (self.padding_width, self.padding_width, self.padding_height, self.padding_height, self.padding_frame, self.padding_frame)
+
+        # save video shape and calculate max number of tokens
+
+        self.video_shape = video_shape
         max_frames, fmap_size, _ = video_shape
         max_num_tokens = torch.empty(video_shape).numel()
         self.max_num_tokens = max_num_tokens
@@ -576,8 +594,8 @@ class Sparse3DNA(nn.Module):
 
         indices = torch.arange(max_num_tokens)
         shaped_indices = rearrange(indices, '(f h w) -> 1 1 f h w', f = max_frames, h = fmap_size, w = fmap_size)
-        padded_indices = F.pad(shaped_indices, (self.video_padding,) * 6, value = max_num_tokens) # padding has value of max tokens so to be masked out
-        unfolded_indices = unfoldNd(padded_indices, kernel_size = kernel_size, dilation = dilation)
+        padded_indices = F.pad(shaped_indices, self.video_padding, value = max_num_tokens) # padding has value of max tokens so to be masked out
+        unfolded_indices = unfoldNd(padded_indices, kernel_size = self.kernel_size, dilation = self.dilation)
         unfolded_indices = rearrange(unfolded_indices, '1 k n -> n k')
 
         # if causal, compare query and key indices and make sure past cannot see future
@@ -640,7 +658,7 @@ class Sparse3DNA(nn.Module):
         # reshape keys and values to video and add appropriate padding along all dimensions (frames, height, width)
 
         k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
-        k, v = map(lambda t: F.pad(t, (video_padding,) * 6), (k, v))
+        k, v = map(lambda t: F.pad(t, video_padding), (k, v))
 
         # put the attention processing code in a function
         # to allow for processing queries in chunks of frames
@@ -651,7 +669,7 @@ class Sparse3DNA(nn.Module):
             chunk_length = q.shape[1]
 
             k, v = map(lambda t: unfoldNd(t, kernel_size = kernel_size, dilation = dilation), (k, v))
-            k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = kernel_size ** 3), (k, v))
+            k, v = map(lambda t: rearrange(t, 'b (d j) i -> b i j d', j = self.kernel_numel), (k, v))
             k, v = map(lambda t: t[:, :chunk_length], (k, v))
 
             # append bos keys and values
@@ -697,7 +715,7 @@ class Sparse3DNA(nn.Module):
             # slice the keys and values to the appropriate frames, accounting for padding along frames dimension
 
             kv_start_pos = ind * frames_per_chunk
-            kv_end_pos = kv_start_pos + (ind + frames_per_chunk + video_padding * 2)
+            kv_end_pos = kv_start_pos + (ind + frames_per_chunk + self.padding_frame * 2)
             kv_frame_range = slice(kv_start_pos, kv_end_pos)
 
             k_slice, v_slice = map(lambda t: t[:, :, kv_frame_range], (k, v))
