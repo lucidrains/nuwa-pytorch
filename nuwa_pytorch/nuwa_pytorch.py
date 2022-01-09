@@ -812,6 +812,90 @@ class Transformer(nn.Module):
 
         return self.norm(x)
 
+class ReversibleTransformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        depth,
+        causal = False,
+        heads = 8,
+        dim_head = 64,
+        ff_mult = 4,
+        cross_attend = False,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        ff_chunk_size = None,
+        sparse_3dna_attn = False,
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_video_shape = None,
+        sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilations = (1,),
+        shift_video_tokens = False
+    ):
+        super().__init__()
+        assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+        self.layers = MList([])
+
+        for ind in range(depth):
+            if sparse_3dna_attn:
+                dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+                image_size = sparse_3dna_video_shape[-1]
+
+                self_attn = Sparse3DNA(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    causal = causal,
+                    kernel_size = sparse_3dna_kernel_size,
+                    dilation = dilation,
+                    video_shape = sparse_3dna_video_shape,
+                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                )
+            else:
+                image_size = None
+
+                self_attn = Attention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    causal = causal,
+                    dropout = attn_dropout
+                )
+
+            wrapper_fn = partial(ShiftVideoTokens, image_size = image_size, shift_space = sparse_3dna_attn and shift_video_tokens)
+
+            self.layers.append(MList([
+                SandwichNorm(dim = dim, fn = wrapper_fn(self_attn)),
+                SandwichNorm(dim = dim, fn = wrapper_fn(FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)))
+            ]))
+
+            if not cross_attend:
+                continue
+
+            self.layers.append(MList([
+                SandwichNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)),
+                SandwichNorm(dim = dim, fn = wrapper_fn(FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)))
+            ]))
+
+        attn_context_layer = ((True, False),) if cross_attend else tuple()
+        route_attn = ((True, False), *attn_context_layer) * depth
+        route_context = ((False, False), *attn_context_layer) * depth
+
+        context_route_map = {'context': route_context, 'context_mask': route_context} if cross_attend else {}
+        attn_route_map = {'mask': route_attn}
+
+        self.net = ReversibleSequence(self.layers, args_route = {**context_route_map, **attn_route_map})
+        self.norm = StableLayerNorm(dim)
+
+    def forward(
+        self,
+        x,
+        **kwargs
+    ):
+        x = self.net(x, **kwargs)
+        return self.norm(x)
+
 # embeddings
 
 class Embedding(nn.Module):
@@ -876,9 +960,11 @@ class NUWA(nn.Module):
         text_enc_depth = 6,
         text_enc_dim_head = 64,
         text_enc_heads = 8,
+        enc_reversible = False,
         dec_depth = 6,
         dec_dim_head = 64,
         dec_heads = 8,
+        dec_reversible = False,
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
@@ -897,7 +983,9 @@ class NUWA(nn.Module):
         self.text_embedding = Embedding(text_num_tokens, dim, frac_gradient = embed_gradient_frac)
         self.text_pos_embedding = Embedding(text_max_seq_len, dim)
 
-        self.text_transformer = Transformer(
+        enc_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+
+        self.text_transformer = enc_transformer_klass(
             dim = dim,
             depth = text_enc_depth,
             heads = text_enc_heads,
@@ -921,7 +1009,9 @@ class NUWA(nn.Module):
 
         sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
 
-        self.video_transformer = Transformer(
+        dec_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+
+        self.video_transformer = dec_transformer_klass(
             dim = dim,
             depth = dec_depth,
             heads = dec_heads,

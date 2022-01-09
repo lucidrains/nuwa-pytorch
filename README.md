@@ -64,20 +64,25 @@ vae = VQGanVAE(
 nuwa = NUWA(
     vae = vae,
     dim = 512,
-    max_video_frames = 5,
-    text_num_tokens = 20000,
-    image_size = 256
+    text_num_tokens = 20000,           # number of text tokens
+    text_enc_depth = 12,               # text encoder depth
+    dec_depth = 64,                    # video decoder depth
+    max_video_frames = 10,             # number of video frames
+    image_size = 256,                  # size of each frame of video
+    dec_reversible = True,             # reversible networks - from reformer, decoupling memory usage from depth
+    enc_reversible = True,             # reversible encoders, if  you need it
+    sparse_3dna_dilation = (1, 2, 4),  # cycle dilation of 3d conv attention in decoder, for more range
 ).cuda()
 
 # data
 
 text = torch.randint(0, 20000, (1, 256)).cuda()
-video = torch.randn(1, 5, 3, 256, 256).cuda() # (batch, frames, channels, height, width)
+video = torch.randn(1, 10, 3, 256, 256).cuda() # (batch, frames, channels, height, width)
 
 loss = nuwa(
     text = text,
     video = video,
-    return_loss = True
+    return_loss = True  # set this to True, only for training, to return cross entropy loss
 )
 
 loss.backward()
@@ -104,13 +109,13 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [x] make VQGan able to accept custom VGG for LPAPs loss (audio)
 - [x] add feedforward chunking
 - [x] add shift token in decoder for cheap powerful RPE
+- [x] add reversible networks, to save on memory on depth
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
 - [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
-- [ ] add reversible networks, to save on memory on depth
 - [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
 - [ ] support kernel sizes different along each dimension for sparse 3dna
 
