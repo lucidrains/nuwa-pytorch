@@ -750,14 +750,12 @@ class Transformer(nn.Module):
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
-        sandwich_norm = True,
         shift_video_tokens = False
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
 
         self.layers = MList([])
-        norm_klass = SandwichNorm if sandwich_norm else PreNorm
 
         for ind in range(depth):
             if sparse_3dna_attn:
@@ -790,9 +788,9 @@ class Transformer(nn.Module):
                 ff        = ShiftVideoTokens(ff, image_size = fmap_size)
 
             self.layers.append(MList([
-                norm_klass(dim = dim, fn = self_attn),
-                norm_klass(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
-                norm_klass(dim = dim, fn = ff)
+                SandwichNorm(dim = dim, fn = self_attn),
+                SandwichNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
+                SandwichNorm(dim = dim, fn = ff)
             ]))
 
         self.norm = StableLayerNorm(dim)
@@ -1027,10 +1025,12 @@ class NUWA(nn.Module):
         return_loss = False,
         cond_dropout_prob = 0.2
     ):
-        batch, seq_len, device = *text.shape, text.device
+        batch, seq_len, frames, device = *text.shape, video.shape[1], text.device
 
         text_mask = text != 0
         text_embeds = self.embed_text(text, mask = text_mask)
+
+        assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
 
         frame_indices = self.vae.get_video_indices(video)
         frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
