@@ -127,6 +127,7 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [ ] support kernel sizes different along each dimension for sparse 3dna
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
+- [ ] rotary embeddings for encoder
 
 ## Citations
 
