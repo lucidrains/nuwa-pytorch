@@ -696,7 +696,7 @@ class Sparse3DNA(nn.Module):
 
             # slice the keys and values to the appropriate frames, accounting for padding along frames dimension
 
-            kv_start_pos = ind
+            kv_start_pos = ind * frames_per_chunk
             kv_end_pos = kv_start_pos + (ind + frames_per_chunk + video_padding * 2)
             kv_frame_range = slice(kv_start_pos, kv_end_pos)
 
