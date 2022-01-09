@@ -98,7 +98,7 @@ loss.backward()
 
 # then you can generate a video from text
 
-video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
+video = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ```
 

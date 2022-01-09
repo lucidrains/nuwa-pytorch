@@ -1085,7 +1085,8 @@ class NUWA(nn.Module):
         filter_thres = 0.9,
         temperature = 1.,
         decode_max_batchsize = 10,
-        cond_scale = 2.
+        cond_scale = 2.,
+        num_frames = None
     ):
         batch, seq_len, device = *text.shape, text.device
 
@@ -1095,13 +1096,26 @@ class NUWA(nn.Module):
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
 
         video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
-        total_video_tokens = self.video_fmap_size * self.video_fmap_size * self.max_video_frames
+
+        num_tokens_per_frame = self.video_fmap_size ** 2
+
+        num_frames = default(num_frames, self.max_video_frames)
+        total_video_tokens =  num_tokens_per_frame * num_frames
+        max_video_tokens = num_tokens_per_frame * self.max_video_frames
 
         pos_emb = self.video_pos_emb()
 
         for ind in range(total_video_tokens):
-            frame_embeddings = self.image_embedding(video_indices)
-            frame_embeddings = pos_emb[:, :ind] + frame_embeddings
+            video_indices_input = video_indices
+
+            num_video_tokens = video_indices.shape[1]
+            if num_video_tokens > max_video_tokens:
+                curr_frame_tokens = num_video_tokens % num_tokens_per_frame
+                lookback_tokens = (self.max_video_frames - (0 if curr_frame_tokens == 0 else 1)) * num_tokens_per_frame + curr_frame_tokens
+                video_indices_input = video_indices[:, -lookback_tokens:]
+
+            frame_embeddings = self.image_embedding(video_indices_input)
+            frame_embeddings = pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
             frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
 
             frame_embeddings = self.video_transformer(
