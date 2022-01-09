@@ -1,6 +1,6 @@
 <img src="./nuwa.png" width="400px"></img>
 
-## NÜWA - Pytorch (wip)
+## NÜWA - Pytorch
 
 <a href="https://discord.gg/xBPBXfcFHd"><img alt="Join us on Discord" src="https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white"></a></br>
 
@@ -126,6 +126,7 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 - [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
 - [ ] support kernel sizes different along each dimension for sparse 3dna
 - [ ] Triton kernel for 3dna attention
+- [ ] offer a colab with moving mnist example, conditioned on present digits
 
 ## Citations
 
