@@ -106,8 +106,9 @@ video = nuwa.generate(text = text) # (1, 5, 3, 256, 256)
 
 This library depends on this <a href="https://github.com/lucidrains/vector-quantize-pytorch">vector quantization</a> library, which comes with a number of improvements (improved vqgan, orthogonal codebook regularization, etc). To use any of these improvements, you can configure the vector quantizer keyword params by prepending `vq_` on `VQGanVAE` initialization.
 
+ex. cosine sim proposed in <a href="https://arxiv.org/abs/2110.04627">improved vqgan</a>
+
 ```python
-import torch
 from nuwa_pytorch import VQGanVAE
 
 vae = VQGanVAE(
