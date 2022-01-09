@@ -1085,7 +1085,8 @@ class NUWA(nn.Module):
         filter_thres = 0.9,
         temperature = 1.,
         decode_max_batchsize = 10,
-        cond_scale = 2.
+        cond_scale = 2.,
+        num_frames = None
     ):
         batch, seq_len, device = *text.shape, text.device
 
@@ -1095,12 +1096,17 @@ class NUWA(nn.Module):
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
 
         video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
-        total_video_tokens = self.video_fmap_size * self.video_fmap_size * self.max_video_frames
+
+        num_tokens_per_frame = self.video_fmap_size ** 2
+
+        num_frames = default(num_frames, self.max_video_frames)
+        total_video_tokens =  num_tokens_per_frame * num_frames
+        max_video_tokens = num_tokens_per_frame * self.max_video_frames
 
         pos_emb = self.video_pos_emb()
 
         for ind in range(total_video_tokens):
-            frame_embeddings = self.image_embedding(video_indices)
+            frame_embeddings = self.image_embedding(video_indices[:, -max_video_tokens:])
             frame_embeddings = pos_emb[:, :ind] + frame_embeddings
             frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
 
