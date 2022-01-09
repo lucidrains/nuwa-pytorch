@@ -142,7 +142,6 @@ vae = VQGanVAE(
 - [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
-- [ ] allow for variable lengthed videos in sparse 3dna non-causal attention
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder

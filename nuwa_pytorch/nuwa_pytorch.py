@@ -609,7 +609,7 @@ class Sparse3DNA(nn.Module):
         mask = F.pad(mask, (1, 0), value = False) # bos tokens never get masked out
         self.register_buffer('mask', mask)
 
-    def forward(self, x, mask = None):
+    def forward(self, x):
         b, n, _, h, device = *x.shape, self.heads, x.device
 
         # more variables
