@@ -432,6 +432,11 @@ class ShiftVideoTokens(nn.Module):
         x = torch.cat((x_bos, x_video), dim = 1)
         return self.fn(x, **kwargs)
 
+class GEGLU(nn.Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim = -1)
+        return x * F.gelu(gate)
+
 class FeedForward(nn.Module):
     def __init__(
         self,
@@ -442,12 +447,12 @@ class FeedForward(nn.Module):
         chunk_size = None,  # chunk size to process feedforward, along sequence length, from Reformer paper. None means do not chunk
     ):
         super().__init__()
-        inner_dim = int(dim * mult)
+        inner_dim = (dim * mult * 2) // 3
         self.chunk_size = chunk_size
 
         self.net = nn.Sequential(
-            nn.Linear(dim, inner_dim),
-            nn.GELU(),
+            nn.Linear(dim, inner_dim * 2),
+            GEGLU(),
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim)
         )
@@ -481,6 +486,7 @@ class Attention(nn.Module):
         self.null_k = nn.Parameter(torch.randn(1, heads, 1, dim_head))
         self.null_v = nn.Parameter(torch.randn(1, heads, 1, dim_head))
 
+        self.talking_heads = nn.Conv2d(heads, heads, 1, bias = False)
         self.dropout = nn.Dropout(dropout)
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
@@ -533,6 +539,7 @@ class Attention(nn.Module):
         # attention
 
         attn = stable_softmax(sim, dim = -1)
+        attn = self.talking_heads(attn)
         attn = self.dropout(attn)
 
         # aggregate, merge, and combine heads
@@ -562,6 +569,8 @@ class Sparse3DNA(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
+
+        self.talking_heads = nn.Conv2d(heads, heads, 1, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.dilation = cast_tuple(dilation, size = 3)
@@ -692,6 +701,11 @@ class Sparse3DNA(nn.Module):
             # attention
 
             attn = sim.softmax(dim = -1)
+
+            attn = rearrange(attn, '(b h) ... -> b h ...', h = h)
+            attn = self.talking_heads(attn)
+            attn = rearrange(attn, 'b h ... -> (b h) ...')
+
             attn = self.dropout(attn)
 
             # aggregate values

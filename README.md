@@ -183,6 +183,26 @@ vae = VQGanVAE(
 ```
 
 ```bibtex
+@misc{shazeer2020talkingheads,
+    title   = {Talking-Heads Attention}, 
+    author  = {Noam Shazeer and Zhenzhong Lan and Youlong Cheng and Nan Ding and Le Hou},
+    year    = {2020},
+    eprint  = {2003.02436},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG}
+}
+```
+
+```bibtex
+@misc{shazeer2020glu,
+    title   = {GLU Variants Improve Transformer},
+    author  = {Noam Shazeer},
+    year    = {2020},
+    url     = {https://arxiv.org/abs/2002.05202}    
+}
+```
+
+```bibtex
 @inproceedings{ho2021classifierfree,
     title   = {Classifier-Free Diffusion Guidance},
     author  = {Jonathan Ho and Tim Salimans},
