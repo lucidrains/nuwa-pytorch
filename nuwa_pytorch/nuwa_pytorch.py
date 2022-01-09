@@ -356,6 +356,76 @@ class SandwichNorm(nn.Module):
 
 # helper classes
 
+class ShiftVideoTokens(nn.Module):
+    def __init__(
+        self,
+        fn,
+        image_size,
+        shift_space = True,
+        shift_time = False
+    ):
+        super().__init__()
+        self.fn = fn
+        self.image_size = image_size
+
+        self.shift_time = shift_time
+        self.shift_space = shift_space
+
+    def forward(self, x, **kwargs):
+
+        if not self.shift_time and not self.shift_space:
+            return self.fn(x, **kwargs)
+
+        image_size = self.image_size
+        img_seq_len = image_size ** 2
+
+        x_bos, x_video = x[:, :1], x[:, 1:]
+        n = x_video.shape[1]
+
+        # pad to nearest frame
+
+        padding = img_seq_len - (n % img_seq_len)
+        x_video = F.pad(x_video, (0, 0, 0, padding), value = 0.)
+
+        # reshape to video
+
+        x_video = rearrange(x_video, 'b (f h w) d -> b f h w d', h = image_size, w = image_size)
+
+        x_image_h = x_image_w = x_frame = None
+
+        # chunk depending on whether shifting time, space, or both
+
+        if self.shift_space and self.shift_time:
+            x_frame, x_image_h, x_image_w, *x_rest = x_video.chunk(5, dim = -1)
+        elif self.shift_space:
+            x_image_h, x_image_w, *x_rest = x_video.chunk(4, dim = -1)
+        elif self.shift_time:
+            x_frame, *x_rest = x_video.chunk(3, dim = -1)
+
+        # shifts
+
+        if self.shift_space:
+            x_image_h = F.pad(x_image_h, (0, 0, 0, 0, 1, -1))
+            x_image_w = F.pad(x_image_w, (0, 0, 1, -1))
+
+        if self.shift_time:
+            x_frame = F.pad(x_frame, (0, 0, 0, 0, 0, 0, 1, -1))
+
+        # concat
+
+        x_shifted = [x_frame, x_image_h, x_image_w, *x_rest]
+        x_shifted = list(filter(exists, x_shifted))
+
+        x_video = torch.cat(x_shifted, dim = -1)
+
+        # merge text and image sequence back together
+
+        x_video = rearrange(x_video, 'b f h w d -> b (f h w) d')
+        x_video = x_video[:, :n]
+
+        x = torch.cat((x_bos, x_video), dim = 1)
+        return self.fn(x, **kwargs)
+
 class FeedForward(nn.Module):
     def __init__(
         self,
@@ -680,7 +750,8 @@ class Transformer(nn.Module):
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
-        sandwich_norm = True
+        sandwich_norm = True,
+        shift_video_tokens = False
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
@@ -711,10 +782,17 @@ class Transformer(nn.Module):
                     dropout = attn_dropout
                 )
 
+            ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
+
+            if sparse_3dna_attn and shift_video_tokens:
+                fmap_size = sparse_3dna_video_shape[-1]
+                self_attn = ShiftVideoTokens(self_attn, image_size = fmap_size)
+                ff        = ShiftVideoTokens(ff, image_size = fmap_size)
+
             self.layers.append(MList([
                 norm_klass(dim = dim, fn = self_attn),
                 norm_klass(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
-                norm_klass(dim = dim, fn = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size))
+                norm_klass(dim = dim, fn = ff)
             ]))
 
         self.norm = StableLayerNorm(dim)
@@ -807,6 +885,7 @@ class NUWA(nn.Module):
         ff_dropout = 0.,
         ff_chunk_size = None,
         embed_gradient_frac = 0.2,
+        shift_video_tokens = True,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilation = 1,
@@ -854,6 +933,7 @@ class NUWA(nn.Module):
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
+            shift_video_tokens = shift_video_tokens,
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_video_shape = video_shape,
