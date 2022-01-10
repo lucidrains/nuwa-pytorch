@@ -102,6 +102,40 @@ video = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ```
 
+## Trainers
+
+This library will offer some utilities to make training easier. For starters, you can use the `VQGanVAETrainer` class to take care of alternating training between the autoencoder (generator) and discriminator during training
+
+```python
+import torch
+from nuwa_pytorch import VQGanVAE, VQGanVAETrainer
+
+vae = VQGanVAE(
+    dim = 256,
+    image_size = 256,
+    num_layers = 4,
+    vq_use_cosine_sim = True
+).cuda()
+
+trainer = VQGanVAETrainer(
+    vae = vae,
+    lr = 3e-4                 # desired learning rate
+)
+
+get_batch = lambda: torch.randn(2, 3, 256, 256).cuda()
+
+vae_loss, _   = trainer(get_batch())
+discr_loss, _ = trainer(get_batch())
+vae_loss, _   = trainer(get_batch())
+discr_loss, _ = trainer(get_batch())
+
+# ... each forward takes one training step, alternating
+
+# after a lot of steps above, saved trained model
+
+torch.save(vae, f'./trained-vae.pt')
+```
+
 ## VQ improvements
 
 This library depends on this <a href="https://github.com/lucidrains/vector-quantize-pytorch">vector quantization</a> library, which comes with a number of improvements (improved vqgan, orthogonal codebook regularization, etc). To use any of these improvements, you can configure the vector quantizer keyword params by prepending `vq_` on `VQGanVAE` initialization.

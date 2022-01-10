@@ -2,6 +2,7 @@ from functools import partial
 import torch
 from torch import nn, einsum
 from torch.autograd import grad
+from torch.optim import Adam
 import torch.nn.functional as F
 import torchvision
 
@@ -126,6 +127,32 @@ def frac_gradient(t, frac):
     return t * frac + t.detach() * (1 - frac)
 
 # vqgan vae
+
+class VQGanVAETrainer(nn.Module):
+    def __init__(
+        self,
+        *,
+        vae,
+        lr = 3e-4
+    ):
+        super().__init__()
+        assert isinstance(vae, VQGanVAE), 'vae must be instance of VQGanVAE'
+
+        self.vae = vae
+        self.optim = Adam(vae.parameters(), lr = lr)
+        self.register_buffer('state', torch.ones((1,), dtype = torch.bool))
+
+    def forward(self, img):
+        return_loss_key = 'return_loss' if self.state else 'return_discr_loss'
+        vae_kwargs = {return_loss_key: True}
+
+        loss = self.vae(img, **vae_kwargs)
+        loss.backward()
+        self.optim.step()
+        self.optim.zero_grad()
+
+        self.state = self.state.data.copy_(~self.state)
+        return loss, self.state
 
 class Discriminator(nn.Module):
     def __init__(
