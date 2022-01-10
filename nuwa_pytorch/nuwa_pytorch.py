@@ -152,7 +152,7 @@ class VQGanVAETrainer(nn.Module):
         self.optim.zero_grad()
 
         self.state = self.state.data.copy_(~self.state)
-        return loss, self.state
+        return loss, bool(self.state)
 
 class Discriminator(nn.Module):
     def __init__(

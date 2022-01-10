@@ -124,10 +124,10 @@ trainer = VQGanVAETrainer(
 
 get_batch = lambda: torch.randn(2, 3, 256, 256).cuda()
 
-vae_loss, _   = trainer(get_batch())
-discr_loss, _ = trainer(get_batch())
-vae_loss, _   = trainer(get_batch())
-discr_loss, _ = trainer(get_batch())
+vae_loss, is_vae_loss = trainer(get_batch())
+discr_loss, _         = trainer(get_batch())
+vae_loss, _           = trainer(get_batch())
+discr_loss, _         = trainer(get_batch())
 
 # ... each forward takes one training step, alternating
 

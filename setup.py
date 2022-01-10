@@ -4,7 +4,7 @@ setup(
   name = 'nuwa-pytorch',
   packages = find_packages(exclude=[]),
   include_package_data = True,
-  version = '0.1.7',
+  version = '0.1.8',
   license='MIT',
   description = 'NÜWA - Pytorch',
   author = 'Phil Wang',
