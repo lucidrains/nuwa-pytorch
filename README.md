@@ -171,12 +171,12 @@ vae = VQGanVAE(
 - [x] add shift token in decoder for cheap powerful RPE
 - [x] add reversible networks, to save on memory on depth
 - [x] support kernel sizes different along each dimension for sparse 3dna
+- [x] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
 - [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
-- [ ] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
