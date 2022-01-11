@@ -26,8 +26,11 @@ from nuwa_pytorch import VQGanVAE
 
 vae = VQGanVAE(
     dim = 512,
-    image_size = 256,
-    num_layers = 4
+    image_size = 256,           # image size
+    num_layers = 4,             # number of downsampling layers
+    num_resnet_blocks = 2,      # number of resnet blocks
+    vq_codebook_size = 8192,    # codebook size
+    vq_decay = 0.8              # codebook exponential decay
 )
 
 imgs = torch.randn(10, 3, 256, 256)
@@ -56,7 +59,9 @@ from nuwa_pytorch import NUWA, VQGanVAE
 vae = VQGanVAE(
     dim = 512,
     num_layers = 4,
-    image_size = 256
+    image_size = 256,
+    num_resnet_blocks = 2,
+    vq_codebook_size = 8192
 )
 
 # NUWA transformer
