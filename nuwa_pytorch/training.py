@@ -1,4 +1,10 @@
-from torch.optim import AdamW
+import torch
+from torch import nn
+from torch.optim import AdamW, Adam
+
+from nuwa_pytorch.nuwa_pytorch import VQGanVAE
+
+# helper functions
 
 def separate_weight_decayable_params(params):
     no_wd_params = set([param for param in params if param.ndim < 2])
@@ -23,3 +29,31 @@ def get_optimizer(
     ]
 
     return AdamW(param_groups, lr = lr, weight_decay = wd)
+
+# classes
+
+class VQGanVAETrainer(nn.Module):
+    def __init__(
+        self,
+        *,
+        vae,
+        lr = 3e-4
+    ):
+        super().__init__()
+        assert isinstance(vae, VQGanVAE), 'vae must be instance of VQGanVAE'
+
+        self.vae = vae
+        self.optim = Adam(vae.parameters(), lr = lr)
+        self.register_buffer('state', torch.ones((1,), dtype = torch.bool))
+
+    def forward(self, img):
+        return_loss_key = 'return_loss' if self.state else 'return_discr_loss'
+        vae_kwargs = {return_loss_key: True}
+
+        loss = self.vae(img, **vae_kwargs)
+        loss.backward()
+        self.optim.step()
+        self.optim.zero_grad()
+
+        self.state = self.state.data.copy_(~self.state)
+        return loss, bool(self.state)

@@ -26,6 +26,7 @@ from nuwa_pytorch import VQGanVAE
 
 vae = VQGanVAE(
     dim = 512,
+    channels = 3,               # default is 3, but can be changed to any value for the training of the segmentation masks (sketches)
     image_size = 256,           # image size
     num_layers = 4,             # number of downsampling layers
     num_resnet_blocks = 2,      # number of resnet blocks
