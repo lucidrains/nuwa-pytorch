@@ -207,7 +207,7 @@ class VQGanVAE(nn.Module):
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
         l2_recon_loss = False,
-        use_hinge_loss = False,
+        use_hinge_loss = True,
         num_resnet_blocks = 1,
         vgg = None,
         **kwargs
