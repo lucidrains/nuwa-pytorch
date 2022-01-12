@@ -4,7 +4,7 @@ setup(
   name = 'nuwa-pytorch',
   packages = find_packages(exclude=[]),
   include_package_data = True,
-  version = '0.1.10',
+  version = '0.1.11',
   license='MIT',
   description = 'NÜWA - Pytorch',
   author = 'Phil Wang',
@@ -17,6 +17,8 @@ setup(
   ],
   install_requires=[
     'einops>=0.3',
+    'ftfy',
+    'regex',
     'torch>=1.6',
     'torchvision',
     'unfoldNd',

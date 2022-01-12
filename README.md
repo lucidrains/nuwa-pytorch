@@ -243,6 +243,17 @@ vae = VQGanVAE(
 ```
 
 ```bibtex
+@misc{liu2022convnet,
+    title   = {A ConvNet for the 2020s},
+    author  = {Zhuang Liu and Hanzi Mao and Chao-Yuan Wu and Christoph Feichtenhofer and Trevor Darrell and Saining Xie},
+    year    = {2022},
+    eprint  = {2201.03545},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
+
+```bibtex
 @inproceedings{ho2021classifierfree,
     title   = {Classifier-Free Diffusion Guidance},
     author  = {Jonathan Ho and Tim Salimans},

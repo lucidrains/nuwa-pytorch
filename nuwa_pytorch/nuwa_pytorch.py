@@ -128,6 +128,22 @@ def frac_gradient(t, frac):
 
 # vqgan vae
 
+class LayerNormChan(nn.Module):
+    def __init__(
+        self,
+        dim,
+        eps = 1e-5
+    ):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
+        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        std = torch.var(x, dim = 1, unbiased = False, keepdim = True).sqrt()
+        mean = torch.mean(x, dim = 1, keepdim = True)
+        return (x - mean) / (std + self.eps) * self.g + self.b
+
 class Discriminator(nn.Module):
     def __init__(
         self,
@@ -154,6 +170,31 @@ class Discriminator(nn.Module):
             x = net(x)
 
         return self.to_logits(x)
+
+class ConvNextBlock(nn.Module):
+    def __init__(
+        self,
+        dim,
+        act = nn.ReLU(),
+        ds_kernel_size = 3,
+        mult = 4,
+    ):
+        """
+        https://arxiv.org/abs/2201.03545
+        """
+        super().__init__()
+        inner_dim = dim * mult
+
+        self.net = nn.Sequential(
+            nn.Conv2d(dim, dim, ds_kernel_size, padding = ds_kernel_size // 2, groups = dim),
+            LayerNormChan(dim),
+            nn.Conv2d(dim, inner_dim, 1),
+            act,
+            nn.Conv2d(inner_dim, dim, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x) + x
 
 class ResBlock(nn.Module):
     def __init__(self, chan):
