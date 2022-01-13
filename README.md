@@ -47,6 +47,11 @@ discr_loss = vae(imgs, return_discr_loss = True)
 discr_loss.backward()
 
 # do above for many steps
+
+# return reconstructed images and make sure they look ok
+
+recon_imgs = vae(imgs)
+
 ```
 
 Then, with your learned VAE
