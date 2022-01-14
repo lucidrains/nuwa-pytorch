@@ -191,6 +191,7 @@ vae = VQGanVAE(
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
+- [ ] able to add convnext blocks to other layers in vqgan vae - adopt exponentially increasing dimensions through layers
 
 ## Citations
 
