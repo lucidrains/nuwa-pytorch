@@ -29,7 +29,7 @@ vae = VQGanVAE(
     channels = 3,               # default is 3, but can be changed to any value for the training of the segmentation masks (sketches)
     image_size = 256,           # image size
     num_layers = 4,             # number of downsampling layers
-    num_resnet_blocks = 2,      # number of resnet blocks
+    num_conv_blocks = 2,        # number of convnext blocks
     vq_codebook_size = 8192,    # codebook size
     vq_decay = 0.8              # codebook exponential decay
 )
@@ -66,7 +66,7 @@ vae = VQGanVAE(
     dim = 512,
     num_layers = 4,
     image_size = 256,
-    num_resnet_blocks = 2,
+    num_conv_blocks = 2,
     vq_codebook_size = 8192
 )
 
