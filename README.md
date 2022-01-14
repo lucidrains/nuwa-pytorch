@@ -192,6 +192,7 @@ vae = VQGanVAE(
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
 - [ ] able to add convnext blocks to other layers in vqgan vae - adopt exponentially increasing dimensions through layers
+- [ ] make training as easy as running CLI commands, similar to stylegan2-pytorch
 
 ## Citations
 
