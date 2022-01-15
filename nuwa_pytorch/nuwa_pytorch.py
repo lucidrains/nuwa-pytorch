@@ -176,7 +176,7 @@ class ConvNextBlock(nn.Module):
         self,
         dim,
         act = nn.ReLU(),
-        ds_kernel_size = 3,
+        ds_kernel_size = 7,
         mult = 4,
     ):
         """
