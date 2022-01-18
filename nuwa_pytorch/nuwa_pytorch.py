@@ -216,6 +216,7 @@ class VQGanVAE(nn.Module):
         super().__init__()
         vq_kwargs, kwargs = groupby_prefix_and_trim('vq_', kwargs)
 
+        self.channels = channels
         self.num_layers = num_layers
         self.codebook_size = vq_codebook_size
 
@@ -295,7 +296,9 @@ class VQGanVAE(nn.Module):
         return_loss = False,
         return_discr_loss = False
     ):
-        batch, device = img.shape[0], img.device
+        batch, channels, device = *img.shape[:2], img.device
+        assert channels == self.channels, 'number of channels on image or sketch is not equal to the channels set on this VQGanVAE'
+
         fmap = img.clone()
 
         fmap, indices, commit_loss = self.encode(img)
@@ -511,8 +514,8 @@ class Attention(nn.Module):
         self.causal = causal
         self.scale = dim_head ** -0.5
 
-        self.null_k = nn.Parameter(torch.randn(1, heads, 1, dim_head))
-        self.null_v = nn.Parameter(torch.randn(1, heads, 1, dim_head))
+        self.null_k = nn.Parameter(torch.randn(heads, 1, dim_head))
+        self.null_v = nn.Parameter(torch.randn(heads, 1, dim_head))
 
         self.talking_heads = nn.Conv2d(heads, heads, 1, bias = False)
         self.dropout = nn.Dropout(dropout)
@@ -527,7 +530,7 @@ class Attention(nn.Module):
         context = None,
         context_mask = None
     ):
-        h, device = self.heads, x.device
+        b, h, device = x.shape[0], self.heads, x.device
 
         has_context = exists(context)
         kv_input = context if has_context else x
@@ -537,8 +540,11 @@ class Attention(nn.Module):
 
         # add null key / values, needed for condition dropout
 
-        k = torch.cat((self.null_k, k), dim = -2)
-        v = torch.cat((self.null_v, v), dim = -2)
+        null_k = repeat(self.null_k, 'h 1 d -> b h 1 d', b = b)
+        null_v = repeat(self.null_v, 'h 1 d -> b h 1 d', b = b)
+
+        k = torch.cat((null_k, k), dim = -2)
+        v = torch.cat((null_v, v), dim = -2)
 
         # scale
 
@@ -1184,7 +1190,6 @@ class NUWA(nn.Module):
         self,
         *,
         text,
-        image = None,
         video = None,
         return_loss = False,
         cond_dropout_prob = 0.2
@@ -1216,6 +1221,257 @@ class NUWA(nn.Module):
             frame_embeddings,
             context = text_embeds,
             context_mask = text_mask
+        )
+
+        logits = self.to_logits(frame_embeddings)
+
+        if not return_loss:
+            return logits
+
+        loss = F.cross_entropy(rearrange(logits, 'b n c -> b c n'), frame_indices)
+        return loss
+
+# main class for learning on sketches
+
+class NUWASketch(nn.Module):
+    def __init__(
+        self,
+        *,
+        vae,
+        sketch_vae,
+        dim,
+        image_size,
+        max_video_frames = 5,
+        sketch_max_video_frames = 2,
+        sketch_enc_depth = 6,
+        sketch_enc_dim_head = 64,
+        sketch_enc_heads = 8,
+        enc_reversible = False,
+        dec_depth = 6,
+        dec_dim_head = 64,
+        dec_heads = 8,
+        dec_reversible = False,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        ff_chunk_size = None,
+        embed_gradient_frac = 0.2,
+        shift_video_tokens = True,
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilation = 1,
+    ):
+        super().__init__()
+        self.image_size = image_size
+
+        self.sketch_vae = sketch_vae
+        sketch_vae_num_layers = sketch_vae.num_layers
+        sketch_num_image_tokens = sketch_vae.codebook_size
+        sketch_fmap_size = image_size // (2 ** sketch_vae_num_layers)
+
+        sketch_shape = (sketch_max_video_frames, sketch_fmap_size, sketch_fmap_size)
+
+        self.sketch_max_video_frames = sketch_max_video_frames
+        self.sketch_embedding = Embedding(sketch_num_image_tokens, dim, frac_gradient = embed_gradient_frac)
+        self.sketch_pos_emb = AxialPositionalEmbedding(dim, shape = sketch_shape)
+
+        enc_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+
+        self.sketch_transformer = enc_transformer_klass(
+            dim = dim,
+            depth = sketch_enc_depth,
+            heads = sketch_enc_heads,
+            dim_head = sketch_enc_dim_head,
+            attn_dropout = attn_dropout,
+            ff_dropout = ff_dropout,
+            shift_video_tokens = shift_video_tokens
+        )
+
+        # decoder parameters
+
+        self.vae = vae
+        vae_num_layers = vae.num_layers
+        num_image_tokens = vae.codebook_size
+
+        self.video_bos = nn.Parameter(torch.randn(dim))
+        self.image_embedding = Embedding(num_image_tokens, dim, frac_gradient = embed_gradient_frac)
+
+        fmap_size = image_size // (2 ** vae_num_layers)
+
+        self.video_fmap_size = fmap_size
+        self.max_video_frames = max_video_frames
+        video_shape = (max_video_frames, fmap_size, fmap_size)
+
+        self.video_pos_emb = AxialPositionalEmbedding(dim, shape = video_shape)
+
+        # cycle dilation for sparse 3d-nearby attention
+
+        sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
+
+        dec_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+
+        self.video_transformer = dec_transformer_klass(
+            dim = dim,
+            depth = dec_depth,
+            heads = dec_heads,
+            dim_head = dec_dim_head,
+            causal = True,
+            cross_attend = True,
+            attn_dropout = attn_dropout,
+            ff_dropout = ff_dropout,
+            ff_chunk_size = ff_chunk_size,
+            shift_video_tokens = shift_video_tokens,
+            sparse_3dna_attn = True,
+            sparse_3dna_kernel_size = sparse_3dna_kernel_size,
+            sparse_3dna_video_shape = video_shape,
+            sparse_3dna_dilations = sparse_3dna_dilations,
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+        )
+
+        self.to_logits = nn.Linear(dim, num_image_tokens)
+
+    def embed_sketch(self, sketch, mask = None):
+        batch, frames, channels, image_size, _, device = *sketch.shape, sketch.device
+
+        sketch_indices = self.sketch_vae.get_video_indices(sketch)
+        sketch_indices = rearrange(sketch_indices, 'b ... -> b (...)')
+        sketch_tokens = self.sketch_embedding(sketch_indices)
+
+        num_tokens = sketch_tokens.shape[1]
+
+        sketch_pos_emb = self.sketch_pos_emb()
+        sketch_pos_emb = sketch_pos_emb[:, :num_tokens]
+
+        sketch_tokens = sketch_tokens + sketch_pos_emb
+
+        mask = torch.ones((batch, num_tokens), dtype = torch.bool, device = device)
+
+        embed = self.sketch_transformer(sketch_tokens, mask = mask)
+        return embed, mask
+
+    @torch.no_grad()
+    @eval_decorator
+    def generate(
+        self,
+        *,
+        sketch,
+        filter_thres = 0.9,
+        temperature = 1.,
+        decode_max_batchsize = 10,
+        cond_scale = 2.,
+        num_frames = None
+    ):
+        batch, device = sketch.shape[0], sketch.device
+
+        sketch_embeds, sketch_mask = self.embed_sketch(sketch)
+
+        bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
+
+        video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
+
+        num_tokens_per_frame = self.video_fmap_size ** 2
+
+        num_frames = default(num_frames, self.max_video_frames)
+        total_video_tokens =  num_tokens_per_frame * num_frames
+        max_video_tokens = num_tokens_per_frame * self.max_video_frames
+
+        pos_emb = self.video_pos_emb()
+
+        for ind in range(total_video_tokens):
+            print(ind, total_video_tokens)
+            video_indices_input = video_indices
+
+            num_video_tokens = video_indices.shape[1]
+            if num_video_tokens > max_video_tokens:
+                curr_frame_tokens = num_video_tokens % num_tokens_per_frame
+                lookback_tokens = (self.max_video_frames - (0 if curr_frame_tokens == 0 else 1)) * num_tokens_per_frame + curr_frame_tokens
+                video_indices_input = video_indices[:, -lookback_tokens:]
+
+            frame_embeddings = self.image_embedding(video_indices_input)
+            frame_embeddings = pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
+            frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
+
+            frame_embeddings = self.video_transformer(
+                frame_embeddings,
+                context = sketch_embeds,
+                context_mask = sketch_mask
+            )
+
+            logits = self.to_logits(frame_embeddings)
+
+            if cond_scale != 1:
+                # discovery by Katherine Crowson
+                # https://twitter.com/RiversHaveWings/status/1478093658716966912
+                uncond_frame_embeddings = self.video_transformer(
+                    frame_embeddings,
+                    context = sketch_embeds,
+                    context_mask = torch.zeros_like(sketch_mask).bool()
+                )
+
+                uncond_logits = self.to_logits(uncond_frame_embeddings)
+                logits = uncond_logits + (logits - uncond_logits) * cond_scale
+
+            logits = logits[:, -1, :]
+
+            filtered_logits = top_k(logits, thres = filter_thres)
+            sample = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
+            sample = rearrange(sample, 'b -> b 1')
+            video_indices = torch.cat((video_indices, sample), dim = 1)
+
+        codes = self.vae.codebook[video_indices]
+        codes = rearrange(codes, 'b (f h w) d -> (b f) d h w', h = self.video_fmap_size, w = self.video_fmap_size)
+
+        image_reconstructions = batch_process(codes, self.vae.decode, chunks = decode_max_batchsize)
+        video = rearrange(image_reconstructions, '(b f) d h w -> b f d h w', b = batch)
+        return video
+
+    def forward(
+        self,
+        *,
+        sketch,
+        video = None,
+        return_loss = False,
+        cond_dropout_prob = 0.2
+    ):
+        # handle one sketch gracefully
+
+        if sketch.ndim == 4:
+            sketch = rearrange(sketch, 'b c h w -> b 1 c h w')
+
+        # get a bunch of variables
+
+        batch, sketch_frames, sketch_channels, sketch_image_size, _, frames, device = *sketch.shape, video.shape[1], sketch.device
+
+        # guardrails
+
+        assert sketch_image_size == self.image_size, 'sketch image size must be equal'
+        assert sketch_frames <= self.sketch_max_video_frames, 'sketch frames must be less than max sketch video frames'
+
+        # get sketch embeddings, and calculate mask (for now, assume no padding)
+
+        sketch_embeds, sketch_mask = self.embed_sketch(sketch)
+
+        assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
+
+        frame_indices = self.vae.get_video_indices(video)
+        frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
+        frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
+
+        frame_embeddings = self.image_embedding(frame_indices_input)
+        frame_embeddings = self.video_pos_emb()[:, :-1] + frame_embeddings
+
+        bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
+        frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
+
+        if self.training and cond_dropout_prob > 0:
+            # dropout condition randomly
+            # presented in https://openreview.net/forum?id=qw8AKxfYbI
+            uncond_mask = prob_mask_like((batch,), cond_dropout_prob, device = device)
+            sketch_mask *= rearrange(~uncond_mask, 'b -> b 1')
+
+        frame_embeddings = self.video_transformer(
+            frame_embeddings,
+            context = sketch_embeds,
+            context_mask = sketch_mask
         )
 
         logits = self.to_logits(frame_embeddings)

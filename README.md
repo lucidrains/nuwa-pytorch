@@ -113,6 +113,80 @@ video = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ```
 
+## Conditioning on Sketches (wip)
+
+In the paper, they also present a way to condition the video generation based on segmentation mask(s). You can easily do this as well, given you train a `VQGanVAE` on the sketches before hand.
+
+Then, you will use `NUWASketch` instead of `NUWA`, which can accept the sketch VAE as a reference
+
+ex.
+
+```python
+import torch
+from nuwa_pytorch import NUWASketch, VQGanVAE
+
+# autoencoder, one for main video, the other for the sketch
+
+vae = VQGanVAE(
+    dim = 512,
+    num_layers = 4,
+    image_size = 256,
+    num_conv_blocks = 2,
+    vq_codebook_size = 8192
+)
+
+sketch_vae = VQGanVAE(
+    dim = 512,
+    channels = 5,                # say the sketch has 5 classes
+    num_layers = 4,
+    image_size = 256,
+    num_conv_blocks = 2,
+    vq_codebook_size = 8192
+)
+
+# NUWA transformer for conditioning with sketches
+
+nuwa = NUWASketch(
+    vae = vae,
+    sketch_vae = sketch_vae,
+    dim = 512,                              # model dimensions
+    sketch_enc_depth = 12,                  # sketch encoder depth
+    sketch_enc_heads = 8,                   # number of attention heads for sketch encoder
+    sketch_max_video_frames = 3,            # max number of frames for sketches
+    max_video_frames = 10,                  # number of video frames
+    image_size = 256,                       # size of each frame of video
+    dec_depth = 64,                         # video decoder depth
+    dec_heads = 8,                          # number of attention heads in decoder
+    dec_reversible = True,                  # reversible networks - from reformer, decoupling memory usage from depth
+    enc_reversible = True,                  # reversible encoders, if you need it
+    attn_dropout = 0.05,                    # dropout for attention
+    ff_dropout = 0.05,                      # dropout for feedforward
+    sparse_3dna_kernel_size = (5, 3, 3),    # kernel size of the sparse 3dna attention. can be a single value for frame, height, width, or different values (to simulate axial attention, etc)
+    sparse_3dna_dilation = (1, 2, 4),       # cycle dilation of 3d conv attention in decoder, for more range
+    shift_video_tokens = True               # cheap relative positions for sparse 3dna transformer, by shifting along spatial dimensions by one
+).cuda()
+
+# data
+
+sketch = torch.randn(2, 2, 5, 256, 256).cuda() # (batch, frames, segmentation classes, height, width)
+video = torch.randn(2, 10, 3, 256, 256).cuda() # (batch, frames, channels, height, width)
+
+loss = nuwa(
+    sketch = sketch,
+    video = video,
+    return_loss = True  # set this to True, only for training, to return cross entropy loss
+)
+
+loss.backward()
+
+# do above with as much data as possible
+
+# then you can generate a video from sketch(es)
+
+video = nuwa.generate(sketch = sketch, num_frames = 5) # (1, 5, 3, 256, 256)
+
+```
+
 ## Trainers
 
 This library will offer some utilities to make training easier. For starters, you can use the `VQGanVAETrainer` class to take care of alternating training between the autoencoder (generator) and discriminator during training
@@ -193,6 +267,9 @@ vae = VQGanVAE(
 - [ ] rotary embeddings for encoder
 - [ ] able to add convnext blocks to other layers in vqgan vae - adopt exponentially increasing dimensions through layers
 - [ ] make training as easy as running CLI commands, similar to stylegan2-pytorch
+- [ ] build NUWA controller class that can accept text or sketch
+- [ ] finish 3d-nearby cross attention for sketches
+- [ ] handle variable lengthed sketches, accept a mask on the sketch frames dimension
 
 ## Citations
 
