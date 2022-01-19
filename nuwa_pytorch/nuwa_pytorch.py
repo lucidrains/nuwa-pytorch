@@ -844,8 +844,46 @@ class SparseCross2DNA(nn.Module):
         tokens_per_frame = fmap_size * fmap_size
         kernel_numel = kernel_size * kernel_size
 
+        # always have context mask avaiable
+
+        if not exists(context_mask):
+            context_mask = torch.ones((b, context_len), dtype = torch.bool, device = device)
+
+        mask_value = -torch.finfo(x.dtype).max
+
+        # derive queries, keys, values
+
         qkv = (self.to_q(x), *self.to_kv(context).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
+
+        # scale
+
+        q = q * self.scale
+
+        # handle bos
+
+        q_bos, q = q[:, :, 0], q[:, :, 1:]
+
+        null_k_for_bos = repeat(self.null_k, 'h 1 d -> b h 1 d', b = b)
+        null_v_for_bos = repeat(self.null_v, 'h 1 d -> b h 1 d', b = b)
+
+        k_for_bos = torch.cat((null_k_for_bos, k), dim = -2)
+        v_for_bos = torch.cat((null_v_for_bos, v), dim = -2)
+
+        sim_bos = einsum('b h d, b h j d -> b h j', q_bos, k_for_bos)
+
+        bos_context_mask = rearrange(context_mask, 'b j -> b 1 j')
+        bos_context_mask = F.pad(bos_context_mask, (1, 0), value = True)
+        sim_bos = sim_bos.masked_fill(~bos_context_mask, mask_value)
+
+        attn_bos = stable_softmax(sim_bos, dim = -1)
+        out_bos = einsum('b h j, b h j d -> b h d', attn_bos, v_for_bos)
+        out_bos = rearrange(out_bos, 'b h d -> b 1 (h d)')
+
+        # early return if only bos token
+
+        if n == 1:
+            return self.to_out(out_bos)
 
         # reshape key / values to be unfolded
 
@@ -861,10 +899,6 @@ class SparseCross2DNA(nn.Module):
         k = torch.cat((null_k, k), dim = -2)
         v = torch.cat((null_v, v), dim = -2)
 
-        # scale
-
-        q = q * self.scale
-
         # pad queries to nearest frame
 
         q_remainder = q.shape[-2] % tokens_per_frame
@@ -879,16 +913,12 @@ class SparseCross2DNA(nn.Module):
 
         # masking
 
-        if not exists(context_mask):
-            context_mask = torch.ones((b, context_len), dtype = torch.bool, device = device)
-
         context_mask = rearrange(context_mask, 'b (f x y) -> (b f) 1 x y', x = fmap_size, y = fmap_size)
         context_mask = F.unfold(context_mask.float(), kernel_size = kernel_size, dilation = dilation, padding = padding)
         context_mask = context_mask == 1.
         context_mask = rearrange(context_mask, '(b f) j i -> b 1 1 i (f j)', b = b, j = kernel_numel)
         context_mask = F.pad(context_mask, (1, 0), value = True) # always pay attention to null key / value
 
-        mask_value = -torch.finfo(sim.dtype).max
         sim = sim.masked_fill(~context_mask, mask_value)
 
         # attention
@@ -901,6 +931,11 @@ class SparseCross2DNA(nn.Module):
 
         out = einsum('b h f i j, b h i j d -> b h f i d', attn, v)
         out = rearrange(out, 'b h f n d -> b (f n) (h d)')
+
+        # add output for bos back
+
+        out = torch.cat((out_bos, out), dim = 1)
+
         return self.to_out(out[:, :n])
 
 # transformer
