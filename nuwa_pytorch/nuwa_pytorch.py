@@ -795,6 +795,114 @@ class Sparse3DNA(nn.Module):
         out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
         return self.to_out(out)
 
+class SparseCross2DNA(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        image_size,
+        heads = 8,
+        dim_head = 64,
+        dropout = 0.,
+        kernel_size = 3,
+        dilation = 1,
+    ):
+        super().__init__()
+        inner_dim = heads * dim_head
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.null_k = nn.Parameter(torch.randn(heads, 1, dim_head))
+        self.null_v = nn.Parameter(torch.randn(heads, 1, dim_head))
+
+        self.talking_heads = nn.Conv3d(heads, heads, 1, bias = False)
+        self.dropout = nn.Dropout(dropout)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+        # handle variables for 2d unfold
+
+        self.image_size = image_size
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.padding = calc_same_padding(kernel_size, dilation)
+
+    def forward(
+        self,
+        x,
+        *,
+        context,
+        context_mask = None,
+        **kwargs
+    ):
+        b, n, h, device = x.shape[0], x.shape[1], self.heads, x.device
+
+        fmap_size, kernel_size, dilation, padding = self.image_size, self.kernel_size, self.dilation, self.padding
+
+        context_len = context.shape[-2]
+        tokens_per_frame = fmap_size * fmap_size
+        kernel_numel = kernel_size * kernel_size
+
+        qkv = (self.to_q(x), *self.to_kv(context).chunk(2, dim = -1))
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
+
+        # reshape key / values to be unfolded
+
+        k, v = map(lambda t: rearrange(t, 'b h (f x y) d -> (b h f) d x y', x = fmap_size, y = fmap_size), (k, v))
+        k, v = map(lambda t: F.unfold(t, kernel_size = kernel_size, dilation = dilation, padding = padding), (k, v))
+        k, v = map(lambda t: rearrange(t, '(b h f) (d j) i -> b h i (f j) d', b = b, h = h, j = kernel_numel), (k, v))
+
+        # add null key / values, needed for condition dropout
+
+        null_k = repeat(self.null_k, 'h 1 d -> b h i 1 d', b = b, i = tokens_per_frame)
+        null_v = repeat(self.null_v, 'h 1 d -> b h i 1 d', b = b, i = tokens_per_frame)
+
+        k = torch.cat((null_k, k), dim = -2)
+        v = torch.cat((null_v, v), dim = -2)
+
+        # scale
+
+        q = q * self.scale
+
+        # pad queries to nearest frame
+
+        q_remainder = q.shape[-2] % tokens_per_frame
+        q_padding = 0 if q_remainder == 0 else (tokens_per_frame - q_remainder)
+        q = F.pad(q, (0, 0, 0, q_padding), value = 0.)
+
+        # similarity
+
+        q = rearrange(q, 'b h (f i) d -> b h f i d', i = tokens_per_frame)
+
+        sim = einsum('b h f i d, b h i j d -> b h f i j', q, k)
+
+        # masking
+
+        if not exists(context_mask):
+            context_mask = torch.ones((b, context_len), dtype = torch.bool, device = device)
+
+        context_mask = rearrange(context_mask, 'b (f x y) -> (b f) 1 x y', x = fmap_size, y = fmap_size)
+        context_mask = F.unfold(context_mask.float(), kernel_size = kernel_size, dilation = dilation, padding = padding)
+        context_mask = context_mask == 1.
+        context_mask = rearrange(context_mask, '(b f) j i -> b 1 1 i (f j)', b = b, j = kernel_numel)
+        context_mask = F.pad(context_mask, (1, 0), value = True) # always pay attention to null key / value
+
+        mask_value = -torch.finfo(sim.dtype).max
+        sim = sim.masked_fill(~context_mask, mask_value)
+
+        # attention
+
+        attn = stable_softmax(sim, dim = -1)
+        attn = self.talking_heads(attn)
+        attn = self.dropout(attn)
+
+        # aggregate, merge, and combine heads
+
+        out = einsum('b h f i j, b h i j d -> b h f i d', attn, v)
+        out = rearrange(out, 'b h f n d -> b (f n) (h d)')
+        return self.to_out(out[:, :n])
+
 # transformer
 
 class Transformer(nn.Module):
@@ -811,6 +919,10 @@ class Transformer(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
+        cross_2dna_attn = False,
+        cross_2dna_image_size = None,
+        cross_2dna_kernel_size = 3,
+        cross_2dna_dilations = (1,),
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
@@ -820,6 +932,7 @@ class Transformer(nn.Module):
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+        assert not (cross_2dna_attn and not exists(cross_2dna_image_size)), 'cross_2dna_image_size must be defined'
 
         self.layers = MList([])
 
@@ -846,6 +959,30 @@ class Transformer(nn.Module):
                     dropout = attn_dropout
                 )
 
+            cross_attn = None
+
+            if cross_attend:
+                if cross_2dna_attn:
+                    dilation = cross_2dna_dilations[ind % len(cross_2dna_dilations)]
+
+                    cross_attn = SparseCross2DNA(
+                        dim = dim,
+                        heads = heads,
+                        dim_head = dim_head,
+                        dropout = attn_dropout,
+                        image_size = cross_2dna_image_size,
+                        kernel_size = cross_2dna_kernel_size,
+                        dilation = dilation
+                    )
+
+                else:
+                    cross_attn = Attention(
+                        dim = dim,
+                        heads = heads,
+                        dim_head = dim_head,
+                        dropout = attn_dropout
+                    )
+
             ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
 
             if sparse_3dna_attn and shift_video_tokens:
@@ -855,7 +992,7 @@ class Transformer(nn.Module):
 
             self.layers.append(MList([
                 SandwichNorm(dim = dim, fn = self_attn),
-                SandwichNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
+                SandwichNorm(dim = dim, fn = cross_attn) if cross_attend else None,
                 SandwichNorm(dim = dim, fn = ff)
             ]))
 
@@ -892,6 +1029,10 @@ class ReversibleTransformer(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
+        cross_2dna_attn = False,
+        cross_2dna_image_size = None,
+        cross_2dna_kernel_size = 3,
+        cross_2dna_dilations = (1,),
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
@@ -901,6 +1042,8 @@ class ReversibleTransformer(nn.Module):
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+        assert not (cross_2dna_attn and not exists(cross_2dna_image_size)), 'cross_2dna_image_size must be defined'
+
         self.layers = MList([])
 
         for ind in range(depth):
@@ -939,8 +1082,28 @@ class ReversibleTransformer(nn.Module):
             if not cross_attend:
                 continue
 
+            if cross_2dna_attn:
+                dilation = cross_2dna_dilations[ind % len(cross_2dna_dilations)]
+
+                cross_attn = SparseCross2DNA(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    dropout = attn_dropout,
+                    image_size = cross_2dna_image_size,
+                    kernel_size = cross_2dna_kernel_size,
+                    dilation = dilation
+                )
+            else:
+                cross_attn = Attention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    dropout = attn_dropout
+                )
+
             self.layers.append(MList([
-                SandwichNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)),
+                SandwichNorm(dim = dim, fn = cross_attn),
                 SandwichNorm(dim = dim, fn = wrapper_fn(FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)))
             ]))
 
@@ -1256,9 +1419,11 @@ class NUWASketch(nn.Module):
         ff_chunk_size = None,
         embed_gradient_frac = 0.2,
         shift_video_tokens = True,
+        cross_2dna_kernel_size = 3,
+        cross_2dna_dilation = 1,
         sparse_3dna_kernel_size = 3,
-        sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilation = 1,
+        sparse_3dna_query_num_frames_chunk = None,
     ):
         super().__init__()
         self.image_size = image_size
@@ -1297,6 +1462,8 @@ class NUWASketch(nn.Module):
 
         fmap_size = image_size // (2 ** vae_num_layers)
 
+        assert fmap_size == sketch_fmap_size, 'feature map size of video must be equal to the feature map size of sketches (VAEs must have same number of layers)'
+
         self.video_fmap_size = fmap_size
         self.max_video_frames = max_video_frames
         video_shape = (max_video_frames, fmap_size, fmap_size)
@@ -1305,6 +1472,7 @@ class NUWASketch(nn.Module):
 
         # cycle dilation for sparse 3d-nearby attention
 
+        cross_2dna_dilations = tuple(range(1, cross_2dna_dilation + 1)) if not isinstance(cross_2dna_dilation, (list, tuple)) else cross_2dna_dilation
         sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
 
         dec_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
@@ -1316,6 +1484,10 @@ class NUWASketch(nn.Module):
             dim_head = dec_dim_head,
             causal = True,
             cross_attend = True,
+            cross_2dna_attn = True,
+            cross_2dna_image_size = fmap_size,
+            cross_2dna_kernel_size = cross_2dna_kernel_size,
+            cross_2dna_dilations = cross_2dna_dilations,
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
@@ -1377,7 +1549,6 @@ class NUWASketch(nn.Module):
         pos_emb = self.video_pos_emb()
 
         for ind in range(total_video_tokens):
-            print(ind, total_video_tokens)
             video_indices_input = video_indices
 
             num_video_tokens = video_indices.shape[1]

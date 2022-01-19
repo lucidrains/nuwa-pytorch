@@ -163,6 +163,8 @@ nuwa = NUWASketch(
     ff_dropout = 0.05,                      # dropout for feedforward
     sparse_3dna_kernel_size = (5, 3, 3),    # kernel size of the sparse 3dna attention. can be a single value for frame, height, width, or different values (to simulate axial attention, etc)
     sparse_3dna_dilation = (1, 2, 4),       # cycle dilation of 3d conv attention in decoder, for more range
+    cross_2dna_kernel_size = 5,             # 2d kernel size of spatial grouping of attention from video frames to sketches
+    cross_2dna_dilation = 1,                # 2d dilation of spatial attention from video frames to sketches
     shift_video_tokens = True               # cheap relative positions for sparse 3dna transformer, by shifting along spatial dimensions by one
 ).cuda()
 
@@ -257,18 +259,18 @@ vae = VQGanVAE(
 - [x] add reversible networks, to save on memory on depth
 - [x] support kernel sizes different along each dimension for sparse 3dna
 - [x] add some autotrainer that takes care of the alternating updates of discriminator and VQVAE generator
+- [x] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
+- [x] finish 2d-nearby cross attention for sketches
+- [x] able to add convnext blocks to other layers in vqgan vae
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
-- [ ] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
-- [ ] able to add convnext blocks to other layers in vqgan vae - adopt exponentially increasing dimensions through layers
 - [ ] make training as easy as running CLI commands, similar to stylegan2-pytorch
 - [ ] build NUWA controller class that can accept text or sketch
-- [ ] finish 3d-nearby cross attention for sketches
 - [ ] handle variable lengthed sketches, accept a mask on the sketch frames dimension
 
 ## Citations
