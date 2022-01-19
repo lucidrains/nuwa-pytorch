@@ -113,7 +113,7 @@ video = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ```
 
-## Conditioning on Sketches (wip)
+## Conditioning on Sketches
 
 In the paper, they also present a way to condition the video generation based on segmentation mask(s). You can easily do this as well, given you train a `VQGanVAE` on the sketches before hand.
 
