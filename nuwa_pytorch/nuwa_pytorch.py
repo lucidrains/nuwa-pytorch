@@ -652,7 +652,7 @@ class Sparse3DNA(nn.Module):
         mask = F.pad(mask, (1, 0), value = False) # bos tokens never get masked out
         self.register_buffer('mask', mask)
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         b, n, _, h, device = *x.shape, self.heads, x.device
 
         # more variables
@@ -795,6 +795,91 @@ class Sparse3DNA(nn.Module):
         out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
         return self.to_out(out)
 
+class SparseCross2DNA(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        heads = 8,
+        dim_head = 64,
+        causal = False,
+        dropout = 0.,
+        **kwargs
+    ):
+        super().__init__()
+        inner_dim = heads * dim_head
+        self.heads = heads
+        self.causal = causal
+        self.scale = dim_head ** -0.5
+
+        self.null_k = nn.Parameter(torch.randn(heads, 1, dim_head))
+        self.null_v = nn.Parameter(torch.randn(heads, 1, dim_head))
+
+        self.talking_heads = nn.Conv2d(heads, heads, 1, bias = False)
+        self.dropout = nn.Dropout(dropout)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+    def forward(
+        self,
+        x,
+        mask = None,
+        context = None,
+        context_mask = None
+    ):
+        b, h, device = x.shape[0], self.heads, x.device
+
+        has_context = exists(context)
+        kv_input = context if has_context else x
+
+        qkv = (self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1))
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
+
+        # add null key / values, needed for condition dropout
+
+        null_k = repeat(self.null_k, 'h 1 d -> b h 1 d', b = b)
+        null_v = repeat(self.null_v, 'h 1 d -> b h 1 d', b = b)
+
+        k = torch.cat((null_k, k), dim = -2)
+        v = torch.cat((null_v, v), dim = -2)
+
+        # scale
+
+        q = q * self.scale
+
+        # similarity
+
+        sim = einsum('b h i d, b h j d -> b h i j', q, k)
+
+        # masking
+
+        mask_value = -torch.finfo(x.dtype).max
+
+        key_mask = mask if not has_context else context_mask
+
+        if exists(key_mask):
+            key_mask = F.pad(key_mask, (1, 0), value = True) # always pay attention to null key / value
+            key_mask = rearrange(key_mask, 'b j -> b 1 1 j')
+            sim = sim.masked_fill(~key_mask, mask_value)
+
+        if self.causal:
+            i, j = sim.shape[-2:]
+            mask = torch.ones(i, j, device = device, dtype = torch.bool).triu_(j - i + 1)
+            sim = sim.masked_fill(mask, mask_value)
+
+        # attention
+
+        attn = stable_softmax(sim, dim = -1)
+        attn = self.talking_heads(attn)
+        attn = self.dropout(attn)
+
+        # aggregate, merge, and combine heads
+
+        out = einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
 # transformer
 
 class Transformer(nn.Module):
@@ -811,6 +896,9 @@ class Transformer(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
+        cross_2dna_attn = False,
+        cross_2dna_kernel_size = 3,
+        cross_2dna_dilations = (1,),
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
@@ -846,6 +934,28 @@ class Transformer(nn.Module):
                     dropout = attn_dropout
                 )
 
+            cross_attn = None
+
+            if cross_attend:
+                if cross_2dna_attn:
+                    dilation = cross_2dna_dilations[ind % len(cross_2dna_dilations)]
+
+                    cross_attn = SparseCross2DNA(
+                        dim = dim,
+                        heads = heads,
+                        dim_head = dim_head,
+                        dropout = attn_dropout,
+                        kernel_size = cross_2dna_kernel_size,
+                        dilation = cross_2dna_dilations
+                    )
+                else:
+                    cross_attn = Attention(
+                        dim = dim,
+                        heads = heads,
+                        dim_head = dim_head,
+                        dropout = attn_dropout
+                    )
+
             ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
 
             if sparse_3dna_attn and shift_video_tokens:
@@ -855,7 +965,7 @@ class Transformer(nn.Module):
 
             self.layers.append(MList([
                 SandwichNorm(dim = dim, fn = self_attn),
-                SandwichNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)) if cross_attend else None,
+                SandwichNorm(dim = dim, fn = cross_attn) if cross_attend else None,
                 SandwichNorm(dim = dim, fn = ff)
             ]))
 
@@ -892,6 +1002,9 @@ class ReversibleTransformer(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
+        cross_2dna_attn = False,
+        cross_2dna_kernel_size = 3,
+        cross_2dna_dilations = (1,),
         sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_video_shape = None,
@@ -938,6 +1051,24 @@ class ReversibleTransformer(nn.Module):
 
             if not cross_attend:
                 continue
+
+            if cross_2dna_attn:
+                dilation = cross_2dna_dilations[ind % len(cross_2dna_dilations)]
+                cross_attn = SparseCross2DNA(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    dropout = attn_dropout,
+                    kernel_size = cross_2dna_kernel_size,
+                    dilation = cross_2dna_dilations
+                )
+            else:
+                cross_attn = Attention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    dropout = attn_dropout
+                )
 
             self.layers.append(MList([
                 SandwichNorm(dim = dim, fn = Attention(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout)),
@@ -1316,6 +1447,7 @@ class NUWASketch(nn.Module):
             dim_head = dec_dim_head,
             causal = True,
             cross_attend = True,
+            cross_2dna_attn = True,
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
@@ -1377,7 +1509,6 @@ class NUWASketch(nn.Module):
         pos_emb = self.video_pos_emb()
 
         for ind in range(total_video_tokens):
-            print(ind, total_video_tokens)
             video_indices_input = video_indices
 
             num_video_tokens = video_indices.shape[1]
