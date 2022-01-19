@@ -800,11 +800,13 @@ class SparseCross2DNA(nn.Module):
         self,
         *,
         dim,
+        video_shape,
         heads = 8,
         dim_head = 64,
         causal = False,
         dropout = 0.,
-        **kwargs
+        kernel_size = 3,
+        dilation = 1,
     ):
         super().__init__()
         inner_dim = heads * dim_head
@@ -824,8 +826,9 @@ class SparseCross2DNA(nn.Module):
     def forward(
         self,
         x,
+        *,
+        context,
         mask = None,
-        context = None,
         context_mask = None
     ):
         b, h, device = x.shape[0], self.heads, x.device
@@ -897,6 +900,7 @@ class Transformer(nn.Module):
         ff_dropout = 0.,
         ff_chunk_size = None,
         cross_2dna_attn = False,
+        cross_2dna_image_size = None,
         cross_2dna_kernel_size = 3,
         cross_2dna_dilations = (1,),
         sparse_3dna_attn = False,
@@ -908,6 +912,7 @@ class Transformer(nn.Module):
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+        assert not (cross_2dna_attn and not exists(cross_2dna_image_size)), 'cross_2dna_image_size must be defined'
 
         self.layers = MList([])
 
@@ -945,6 +950,7 @@ class Transformer(nn.Module):
                         heads = heads,
                         dim_head = dim_head,
                         dropout = attn_dropout,
+                        image_size = cross_2dna_image_size,
                         kernel_size = cross_2dna_kernel_size,
                         dilation = cross_2dna_dilations
                     )
@@ -1003,6 +1009,7 @@ class ReversibleTransformer(nn.Module):
         ff_dropout = 0.,
         ff_chunk_size = None,
         cross_2dna_attn = False,
+        cross_2dna_image_size = None,
         cross_2dna_kernel_size = 3,
         cross_2dna_dilations = (1,),
         sparse_3dna_attn = False,
@@ -1014,6 +1021,8 @@ class ReversibleTransformer(nn.Module):
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+        assert not (cross_2dna_attn and not exists(cross_2dna_image_size)), 'cross_2dna_image_size must be defined'
+
         self.layers = MList([])
 
         for ind in range(depth):
@@ -1059,6 +1068,7 @@ class ReversibleTransformer(nn.Module):
                     heads = heads,
                     dim_head = dim_head,
                     dropout = attn_dropout,
+                    image_size = cross_2dna_image_size,
                     kernel_size = cross_2dna_kernel_size,
                     dilation = cross_2dna_dilations
                 )
@@ -1428,6 +1438,8 @@ class NUWASketch(nn.Module):
 
         fmap_size = image_size // (2 ** vae_num_layers)
 
+        assert fmap_size == sketch_fmap_size, 'feature map size of video must be equal to the feature map size of sketches (VAEs must have same number of layers)'
+
         self.video_fmap_size = fmap_size
         self.max_video_frames = max_video_frames
         video_shape = (max_video_frames, fmap_size, fmap_size)
@@ -1448,6 +1460,7 @@ class NUWASketch(nn.Module):
             causal = True,
             cross_attend = True,
             cross_2dna_attn = True,
+            cross_2dna_image_size = fmap_size,
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
