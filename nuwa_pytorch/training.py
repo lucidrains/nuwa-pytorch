@@ -46,14 +46,17 @@ class VQGanVAETrainer(nn.Module):
         self.optim = Adam(vae.parameters(), lr = lr)
         self.register_buffer('state', torch.ones((1,), dtype = torch.bool))
 
-    def forward(self, img):
+    def forward(self, img, return_recons = False):
         return_loss_key = 'return_loss' if self.state else 'return_discr_loss'
-        vae_kwargs = {return_loss_key: True}
+        vae_kwargs = {return_loss_key: True, 'return_recons': return_recons}
 
-        loss = self.vae(img, **vae_kwargs)
+        out = self.vae(img, **vae_kwargs)
+        loss = out if not isinstance(out, tuple) else out[0]
+
         loss.backward()
+
         self.optim.step()
         self.optim.zero_grad()
 
         self.state = self.state.data.copy_(~self.state)
-        return loss, bool(self.state)
+        return out, bool(self.state)

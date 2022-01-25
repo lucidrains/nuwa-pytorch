@@ -299,7 +299,8 @@ class VQGanVAE(nn.Module):
         self,
         img,
         return_loss = False,
-        return_discr_loss = False
+        return_discr_loss = False,
+        return_recons = False
     ):
         batch, channels, device = *img.shape[:2], img.device
         assert channels == self.channels, 'number of channels on image or sketch is not equal to the channels set on this VQGanVAE'
@@ -321,6 +322,10 @@ class VQGanVAE(nn.Module):
             fmap.detach_()
             fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
             discr_loss = self.discr_loss(fmap_discr_logits, img_discr_logits)
+
+            if return_recons:
+                return discr_loss, fmap
+
             return discr_loss
 
         # perceptual loss
@@ -350,6 +355,10 @@ class VQGanVAE(nn.Module):
         # combine losses
 
         loss = recon_loss + perceptual_loss + commit_loss + adaptive_weight * gen_loss
+
+        if return_recons:
+            return loss, fmap
+
         return loss
 
 # normalizations
