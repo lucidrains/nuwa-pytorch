@@ -63,7 +63,7 @@ from nuwa_pytorch import NUWA, VQGanVAE
 # autoencoder
 
 vae = VQGanVAE(
-    dim = 512,
+    dim = 64,
     num_layers = 4,
     image_size = 256,
     num_conv_blocks = 2,
@@ -128,7 +128,7 @@ from nuwa_pytorch import NUWASketch, VQGanVAE
 # autoencoder, one for main video, the other for the sketch
 
 vae = VQGanVAE(
-    dim = 512,
+    dim = 64,
     num_layers = 4,
     image_size = 256,
     num_conv_blocks = 2,
@@ -198,7 +198,7 @@ import torch
 from nuwa_pytorch import VQGanVAE, VQGanVAETrainer
 
 vae = VQGanVAE(
-    dim = 256,
+    dim = 64,
     image_size = 256,
     num_layers = 4,
     vq_use_cosine_sim = True
@@ -233,7 +233,7 @@ ex. cosine sim proposed in <a href="https://arxiv.org/abs/2110.04627">improved v
 from nuwa_pytorch import VQGanVAE
 
 vae = VQGanVAE(
-    dim = 256,
+    dim = 64,
     image_size = 256,
     num_layers = 4,
     vq_use_cosine_sim = True
