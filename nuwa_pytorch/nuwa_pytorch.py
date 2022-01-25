@@ -204,6 +204,7 @@ class VQGanVAE(nn.Module):
         image_size,
         channels = 3,
         num_layers = 4,
+        layer_mults = (1, 2, 4, 8),
         vq_codebook_size = 512,
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
@@ -223,7 +224,11 @@ class VQGanVAE(nn.Module):
         self.encoders = MList([])
         self.decoders = MList([])
 
-        dims = (dim,) * (num_layers + 1)
+        assert len(layer_mults) == num_layers, 'layer multipliers must be equal to designated number of layers'
+        layer_dims = [dim * mult for mult in layer_mults]
+        dims = (dim, *layer_dims)
+        codebook_dim = layer_dims[-1]
+
         reversed_dims = tuple(reversed(dims))
         enc_dim_pairs = zip(dims[:-1], dims[1:])
         dec_dim_pairs = zip(reversed_dims[:-1], reversed_dims[1:])
@@ -234,13 +239,13 @@ class VQGanVAE(nn.Module):
 
         for _ in range(num_conv_blocks):
             self.encoders.append(ConvNextBlock(dims[-1]))
-            self.decoders.append(ConvNextBlock(dims[-1]))
+            self.decoders.insert(0, ConvNextBlock(dims[-1]))
 
         self.encoders.insert(0, nn.Conv2d(channels, dim, 3, padding = 1))
         self.decoders.append(nn.Conv2d(dim, channels, 1))
 
         self.vq = VQ(
-            dim = dim,
+            dim = codebook_dim,
             codebook_size = vq_codebook_size,
             decay = vq_decay,
             commitment_weight = vq_commitment_weight,
