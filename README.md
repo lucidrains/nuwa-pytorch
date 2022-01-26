@@ -261,14 +261,13 @@ vae = VQGanVAE(
 - [x] segmentation mask encoder, make sure embeddings can undergo 3dna attention with decoder during cross attention
 - [x] finish 2d-nearby cross attention for sketches
 - [x] able to add convnext blocks to other layers in vqgan vae
+- [x] offer vqvae training script
 - [ ] add cosine sim attention from swinv2 as an option
-- [ ] offer vqvae training script
 - [ ] take care of audio transformer and cross modality attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
-- [ ] make training as easy as running CLI commands, similar to stylegan2-pytorch
 - [ ] build NUWA controller class that can accept text or sketch
 - [ ] handle variable lengthed sketches, accept a mask on the sketch frames dimension
 
