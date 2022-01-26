@@ -191,7 +191,7 @@ video = nuwa.generate(sketch = sketch, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ## Trainers
 
-This library will offer some utilities to make training easier. For starters, you can use the `VQGanVAETrainer` class to take care of alternating training between the autoencoder (generator) and discriminator during training
+This library will offer some utilities to make training easier. For starters, you can use the `VQGanVAETrainer` class to take care of training the `VQGanVAE`. Simply wrap the model and also pass in the image folder path as well as the various training hyperparameters.
 
 ```python
 import torch
@@ -200,27 +200,26 @@ from nuwa_pytorch import VQGanVAE, VQGanVAETrainer
 vae = VQGanVAE(
     dim = 64,
     image_size = 256,
-    num_layers = 4,
-    vq_use_cosine_sim = True
+    num_layers = 5,
+    vq_codebook_size = 1024,
+    vq_use_cosine_sim = True,
+    vq_codebook_dim = 32,
+    orthogonal_reg_weight = 10,
+    orthogonal_reg_max_codes = 128,
 ).cuda()
 
 trainer = VQGanVAETrainer(
-    vae = vae,
-    lr = 3e-4                 # desired learning rate
+    vae,                           # VAE defined above
+    folder ='/path/to/images',     # path to images
+    lr = 3e-4,                     # learning rate
+    num_train_steps = 100000,      # number of training steps
+    batch_size = 8,                # batch size
+    grad_accum_every = 4           # gradient accumulation (effective batch size is (batch_size x grad_accum_every))
 )
 
-get_batch = lambda: torch.randn(2, 3, 256, 256).cuda()
+trainer.train()
 
-vae_loss, is_vae_loss = trainer(get_batch())
-discr_loss, _         = trainer(get_batch())
-vae_loss, _           = trainer(get_batch())
-discr_loss, _         = trainer(get_batch())
-
-# ... each forward takes one training step, alternating
-
-# after a lot of steps above, saved trained model
-
-torch.save(vae, f'./trained-vae.pt')
+# results and model checkpoints will be saved periodically to ./results
 ```
 
 ## VQ improvements

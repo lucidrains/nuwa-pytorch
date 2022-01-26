@@ -204,19 +204,21 @@ class VQGanVAE(nn.Module):
         image_size,
         channels = 3,
         num_layers = 4,
-        layer_mults = (1, 2, 4, 8),
-        vq_codebook_size = 512,
-        vq_decay = 0.8,
-        vq_commitment_weight = 1.,
+        layer_mults = None,
         l2_recon_loss = False,
         use_hinge_loss = True,
         num_conv_blocks = 1,
         vgg = None,
+        vq_codebook_size = 512,
+        vq_decay = 0.8,
+        vq_commitment_weight = 1.,
+        vq_kmeans_init = True,
         **kwargs
     ):
         super().__init__()
         vq_kwargs, kwargs = groupby_prefix_and_trim('vq_', kwargs)
 
+        self.image_size = image_size
         self.channels = channels
         self.num_layers = num_layers
         self.codebook_size = vq_codebook_size
@@ -224,7 +226,9 @@ class VQGanVAE(nn.Module):
         self.encoders = MList([])
         self.decoders = MList([])
 
+        layer_mults = default(layer_mults, list(map(lambda t: 2 ** t, range(num_layers))))
         assert len(layer_mults) == num_layers, 'layer multipliers must be equal to designated number of layers'
+
         layer_dims = [dim * mult for mult in layer_mults]
         dims = (dim, *layer_dims)
         codebook_dim = layer_dims[-1]
@@ -250,7 +254,7 @@ class VQGanVAE(nn.Module):
             decay = vq_decay,
             commitment_weight = vq_commitment_weight,
             accept_image_fmap = True,
-            kmeans_init = True,
+            kmeans_init = vq_kmeans_init,
             **vq_kwargs
         )
 
@@ -305,7 +309,6 @@ class VQGanVAE(nn.Module):
     ):
         batch, channels, device = *img.shape[:2], img.device
         assert channels == self.channels, 'number of channels on image or sketch is not equal to the channels set on this VQGanVAE'
-        orig_img = img.clone()
 
         fmap, indices, commit_loss = self.encode(img)
 
@@ -350,7 +353,7 @@ class VQGanVAE(nn.Module):
 
         # reconstruction loss
 
-        recon_loss = self.recon_loss_fn(fmap, orig_img)
+        recon_loss = self.recon_loss_fn(fmap, img)
 
         # combine losses
 
