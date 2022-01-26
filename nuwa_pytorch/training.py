@@ -139,7 +139,7 @@ class VQGanVAETrainer(nn.Module):
             gen_loss /= self.grad_accum_every
             discr_loss /= self.grad_accum_every
 
-            print(f'vae loss: {gen_loss} - discr loss: {discr_loss}')
+            print(f'{self.steps}: vae loss: {gen_loss} - discr loss: {discr_loss}')
 
             if not (self.steps % self.save_results_every):
                 self.vae.eval()
