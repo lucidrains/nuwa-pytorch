@@ -4,7 +4,12 @@ from torch.optim import AdamW, Adam
 
 from nuwa_pytorch.nuwa_pytorch import VQGanVAE
 
-# helper functions
+# helpers
+
+def cast_tuple(t):
+    return t if isinstance(t, (tuple, list)) else (t,)
+
+# adamw functions
 
 def separate_weight_decayable_params(params):
     no_wd_params = set([param for param in params if param.ndim < 2])
@@ -37,23 +42,30 @@ class VQGanVAETrainer(nn.Module):
         self,
         *,
         vae,
-        lr = 3e-4
+        lr = 3e-4,
+        grad_accum_every = 4
     ):
         super().__init__()
         assert isinstance(vae, VQGanVAE), 'vae must be instance of VQGanVAE'
 
         self.vae = vae
         self.optim = Adam(vae.parameters(), lr = lr)
+        self.grad_accum_every = grad_accum_every
+
         self.register_buffer('state', torch.ones((1,), dtype = torch.bool))
 
-    def forward(self, img, return_recons = False):
+    def forward(self, dl, return_recons = False):
         return_loss_key = 'return_loss' if self.state else 'return_discr_loss'
         vae_kwargs = {return_loss_key: True, 'return_recons': return_recons}
 
-        out = self.vae(img, **vae_kwargs)
-        loss = out if not isinstance(out, tuple) else out[0]
+        for _ in range(self.grad_accum_every):
+            img =  cast_tuple(next(dl))[0]
+            img = img.cuda()
 
-        loss.backward()
+            out = self.vae(img, **vae_kwargs)
+            loss = cast_tuple(out)[0]
+
+            (loss / self.grad_accum_every).backward()
 
         self.optim.step()
         self.optim.zero_grad()

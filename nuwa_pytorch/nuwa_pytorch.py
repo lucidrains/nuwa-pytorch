@@ -250,6 +250,7 @@ class VQGanVAE(nn.Module):
             decay = vq_decay,
             commitment_weight = vq_commitment_weight,
             accept_image_fmap = True,
+            kmeans_init = True,
             **vq_kwargs
         )
 
@@ -304,8 +305,7 @@ class VQGanVAE(nn.Module):
     ):
         batch, channels, device = *img.shape[:2], img.device
         assert channels == self.channels, 'number of channels on image or sketch is not equal to the channels set on this VQGanVAE'
-
-        fmap = img.clone()
+        orig_img = img.clone()
 
         fmap, indices, commit_loss = self.encode(img)
 
@@ -350,7 +350,7 @@ class VQGanVAE(nn.Module):
 
         # reconstruction loss
 
-        recon_loss = self.recon_loss_fn(fmap, img)
+        recon_loss = self.recon_loss_fn(fmap, orig_img)
 
         # combine losses
 
