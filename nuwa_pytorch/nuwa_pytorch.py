@@ -1506,6 +1506,7 @@ class NUWASketch(nn.Module):
         # decoder parameters
 
         self.vae = vae
+
         vae_num_layers = vae.num_layers
         num_image_tokens = vae.codebook_size
 
@@ -1556,6 +1557,9 @@ class NUWASketch(nn.Module):
     def embed_sketch(self, sketch, mask = None):
         batch, frames, channels, image_size, _, device = *sketch.shape, sketch.device
 
+        if exists(mask):
+            assert mask.shape[:2] == (batch, frames), 'sketch mask must be in shape of (batch x frame)'
+
         sketch_indices = self.sketch_vae.get_video_indices(sketch)
         sketch_indices = rearrange(sketch_indices, 'b ... -> b (...)')
         sketch_tokens = self.sketch_embedding(sketch_indices)
@@ -1567,7 +1571,10 @@ class NUWASketch(nn.Module):
 
         sketch_tokens = sketch_tokens + sketch_pos_emb
 
-        mask = torch.ones((batch, num_tokens), dtype = torch.bool, device = device)
+        if exists(mask):
+            mask = repeat(mask, 'b f -> b (f n)', n = (num_tokens // frames))
+        else:
+            mask = torch.ones((batch, num_tokens), dtype = torch.bool, device = device)
 
         embed = self.sketch_transformer(sketch_tokens, mask = mask)
         return embed, mask
@@ -1578,6 +1585,7 @@ class NUWASketch(nn.Module):
         self,
         *,
         sketch,
+        sketch_mask = None,
         filter_thres = 0.9,
         temperature = 1.,
         decode_max_batchsize = 10,
@@ -1586,7 +1594,7 @@ class NUWASketch(nn.Module):
     ):
         batch, device = sketch.shape[0], sketch.device
 
-        sketch_embeds, sketch_mask = self.embed_sketch(sketch)
+        sketch_embeds, decoder_context_mask = self.embed_sketch(sketch, mask = sketch_mask)
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
 
@@ -1616,7 +1624,7 @@ class NUWASketch(nn.Module):
             frame_embeddings = self.video_transformer(
                 frame_embeddings,
                 context = sketch_embeds,
-                context_mask = sketch_mask
+                context_mask = decoder_context_mask
             )
 
             logits = self.to_logits(frame_embeddings)
@@ -1627,7 +1635,7 @@ class NUWASketch(nn.Module):
                 uncond_frame_embeddings = self.video_transformer(
                     frame_embeddings,
                     context = sketch_embeds,
-                    context_mask = torch.zeros_like(sketch_mask).bool()
+                    context_mask = torch.zeros_like(decoder_context_mask).bool()
                 )
 
                 uncond_logits = self.to_logits(uncond_frame_embeddings)
@@ -1651,6 +1659,7 @@ class NUWASketch(nn.Module):
         self,
         *,
         sketch,
+        sketch_mask = None,
         video = None,
         return_loss = False,
         cond_dropout_prob = 0.2
@@ -1671,7 +1680,7 @@ class NUWASketch(nn.Module):
 
         # get sketch embeddings, and calculate mask (for now, assume no padding)
 
-        sketch_embeds, sketch_mask = self.embed_sketch(sketch)
+        sketch_embeds, decoder_context_mask = self.embed_sketch(sketch, mask = sketch_mask)
 
         assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
 
@@ -1694,7 +1703,7 @@ class NUWASketch(nn.Module):
         frame_embeddings = self.video_transformer(
             frame_embeddings,
             context = sketch_embeds,
-            context_mask = sketch_mask
+            context_mask = decoder_context_mask
         )
 
         logits = self.to_logits(frame_embeddings)

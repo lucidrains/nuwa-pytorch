@@ -171,10 +171,12 @@ nuwa = NUWASketch(
 # data
 
 sketch = torch.randn(2, 2, 5, 256, 256).cuda() # (batch, frames, segmentation classes, height, width)
+sketch_mask = torch.ones(2, 2).bool().cuda()   # (batch, frames) [Optional]
 video = torch.randn(2, 10, 3, 256, 256).cuda() # (batch, frames, channels, height, width)
 
 loss = nuwa(
     sketch = sketch,
+    sketch_mask =sketch_mask,
     video = video,
     return_loss = True  # set this to True, only for training, to return cross entropy loss
 )
@@ -262,6 +264,7 @@ vae = VQGanVAE(
 - [x] finish 2d-nearby cross attention for sketches
 - [x] able to add convnext blocks to other layers in vqgan vae
 - [x] offer vqvae training script
+- [x] handle variable lengthed sketches, accept a mask on the sketch frames dimension
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] take care of audio transformer and cross modality attention
 - [ ] add audio transformer, and build audio / video nearby cross attention
@@ -269,7 +272,6 @@ vae = VQGanVAE(
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
 - [ ] build NUWA controller class that can accept text or sketch
-- [ ] handle variable lengthed sketches, accept a mask on the sketch frames dimension
 
 ## Citations
 
