@@ -1303,9 +1303,9 @@ class NUWA(nn.Module):
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
             shift_video_tokens = shift_video_tokens,
+            sparse_3dna_video_shape = video_shape,
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
-            sparse_3dna_video_shape = video_shape,
             sparse_3dna_dilations = sparse_3dna_dilations,
             sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
         )
@@ -1461,6 +1461,7 @@ class NUWASketch(nn.Module):
         sketch_enc_depth = 6,
         sketch_enc_dim_head = 64,
         sketch_enc_heads = 8,
+        sketch_enc_use_sparse_3dna = False,
         enc_reversible = False,
         dec_depth = 6,
         dec_dim_head = 64,
@@ -1491,6 +1492,12 @@ class NUWASketch(nn.Module):
         self.sketch_embedding = Embedding(sketch_num_image_tokens, dim, frac_gradient = embed_gradient_frac)
         self.sketch_pos_emb = AxialPositionalEmbedding(dim, shape = sketch_shape)
 
+        # sparse 3dna kwargs
+
+        sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
+
+        # encoder
+
         enc_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
 
         self.sketch_transformer = enc_transformer_klass(
@@ -1500,7 +1507,12 @@ class NUWASketch(nn.Module):
             dim_head = sketch_enc_dim_head,
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
-            shift_video_tokens = shift_video_tokens
+            shift_video_tokens = shift_video_tokens,
+            sparse_3dna_video_shape = sketch_shape,
+            sparse_3dna_kernel_size = sparse_3dna_kernel_size,
+            sparse_3dna_dilations = sparse_3dna_dilations,
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+            sparse_3dna_attn = sketch_enc_use_sparse_3dna
         )
 
         # decoder parameters
@@ -1526,8 +1538,6 @@ class NUWASketch(nn.Module):
         # cycle dilation for sparse 3d-nearby attention
 
         cross_2dna_dilations = tuple(range(1, cross_2dna_dilation + 1)) if not isinstance(cross_2dna_dilation, (list, tuple)) else cross_2dna_dilation
-        sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
-
         dec_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
 
         self.video_transformer = dec_transformer_klass(
@@ -1545,11 +1555,11 @@ class NUWASketch(nn.Module):
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
             shift_video_tokens = shift_video_tokens,
-            sparse_3dna_attn = True,
-            sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_video_shape = video_shape,
+            sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_dilations = sparse_3dna_dilations,
-            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+            sparse_3dna_attn = True
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)

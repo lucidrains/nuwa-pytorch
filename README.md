@@ -153,6 +153,7 @@ nuwa = NUWASketch(
     sketch_enc_depth = 12,                  # sketch encoder depth
     sketch_enc_heads = 8,                   # number of attention heads for sketch encoder
     sketch_max_video_frames = 3,            # max number of frames for sketches
+    sketch_enc_use_sparse_3dna = True,      # whether to use 3d-nearby attention (of full attention if False) for sketch encoding transformer
     max_video_frames = 10,                  # number of video frames
     image_size = 256,                       # size of each frame of video
     dec_depth = 64,                         # video decoder depth
@@ -272,6 +273,7 @@ vae = VQGanVAE(
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
 - [ ] build NUWA controller class that can accept text or sketch
+- [ ] key masking for 3dna attention - for variable sketch length masking
 
 ## Citations
 
