@@ -188,9 +188,9 @@ class ConvNextBlock(nn.Module):
         self.net = nn.Sequential(
             nn.Conv2d(dim, dim, ds_kernel_size, padding = ds_kernel_size // 2, groups = dim),
             LayerNormChan(dim),
-            nn.Conv2d(dim, inner_dim, 1),
+            nn.Conv2d(dim, inner_dim, 3, padding = 1),
             act,
-            nn.Conv2d(inner_dim, dim, 1)
+            nn.Conv2d(inner_dim, dim, 3, padding = 1)
         )
 
     def forward(self, x):
