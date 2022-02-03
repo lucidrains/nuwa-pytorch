@@ -357,3 +357,5 @@ vae = VQGanVAE(
     url     = {https://twitter.com/RiversHaveWings/status/1478093658716966912}
 }
 ```
+
+*Attention is the rarest and purest form of generosity.* - Simone Weil
