@@ -955,6 +955,152 @@ class SparseCross2DNA(nn.Module):
 
         return self.to_out(out[:, :n])
 
+"""
+For efficient audio <-> video attention
+Largely inspired by chunk cross attention from https://arxiv.org/abs/2112.04426
+"""
+
+def padding_to_multiple_of(n, mult):
+    remainder = n % mult
+    if remainder == 0:
+        return 0
+    return mult - remainder
+
+class CrossModalityCrossAttention(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        chunk_size,
+        context_chunk_size,
+        heads = 8,
+        dim_head = 64,
+        context_dim = None,
+        has_start_token = True,
+        context_has_start_token = True,
+        norm_context = True
+    ):
+        super().__init__()
+        context_dim = default(context_dim, dim)
+
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        inner_dim  = dim_head * heads
+
+        self.norm = nn.LayerNorm(dim)
+        self.context_norm = nn.LayerNorm(context_dim)
+
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_kv = nn.Linear(context_dim, inner_dim * 2, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+        self.null_k = nn.Parameter(torch.randn(context_dim))
+        self.null_v = nn.Parameter(torch.randn(context_dim))
+
+        self.has_start_token = has_start_token
+        self.context_has_start_token = context_has_start_token
+
+        self.chunk_size = chunk_size
+        self.context_chunk_size = context_chunk_size
+
+    def forward(
+        self,
+        seq,
+        context,
+        mask = None,
+        context_mask = None
+    ):
+        # get lengths of sequence and context, excluding start token
+
+        seq_len = seq.shape[-2] - (1 if self.has_start_token else 0)
+        context_len = context.shape[-2] - (1 if self.context_has_start_token else 0)
+
+        # determine padding
+        # depending on whether start token exists
+
+        seq_left_pad = -1 if self.has_start_token else 0
+        seq_right_pad = padding_to_multiple_of(seq_len, self.chunk_size)
+
+        seq_out_left_pad = -seq_left_pad
+        seq_out_right_pad = -seq_right_pad
+
+        context_left_pad = self.context_chunk_size - (1 if self.context_chunk_size else 0)
+        context_right_pad = padding_to_multiple_of(context_len, self.context_chunk_size)
+
+        # do actual padding so divisible by chunk size (video frame)
+
+        seq = F.pad(seq, (0, 0, seq_left_pad, seq_right_pad), value = 0.)
+        context = F.pad(context, (0, 0, context_left_pad, context_right_pad), value = 0.)
+
+        if exists(context_mask):
+            context_mask = F.pad(context_mask, (context_left_pad, context_right_pad), value = False)
+
+        # break into chunks
+
+        """
+        b - batch
+        n - num chunks
+        c - chunks
+        d - feature dimension
+        h - heads
+        """
+
+        seq = rearrange(seq, 'b (n c) d -> b n c d', c = self.chunk_size)
+        context = rearrange(context, 'b (n c) d -> b n c d', c = self.context_chunk_size)
+
+        if exists(context_mask):
+            context_mask = rearrange(context_mask, 'b (n c) -> b n c', c = self.context_chunk_size)
+
+        # determine if sequence is longer than context, or vice versa, when aligned for time
+
+        seq_num_chunks = seq.shape[-3]
+        context_num_chunks = context.shape[-3]
+
+        if seq_num_chunks <= context_num_chunks:
+            context = context[:, :seq_num_chunks]
+
+            if exists(context_mask):
+                context_mask = context_mask[:, :seq_num_chunks]
+        else:
+            # handle the case where the sequence has more chunks
+            # in which case the sequence is curtailed, and output of attention is 0 for the excised right portion
+
+            seq = seq[:, :context_num_chunks]
+            seq_out_right_pad += self.chunk_size * (seq_num_chunks - context_num_chunks)
+
+        # attention time!
+
+        q = self.to_q(seq)
+        k, v = self.to_kv(context).chunk(2, dim = -1)
+
+        q, k, v = map(lambda t: rearrange(t, 'b n c (h d) -> b h n c d', h = self.heads), (q, k, v))
+        q = q * self.scale
+
+        sim = einsum('b h n i d, b h n j d -> b h n i j', q, k)
+
+        if exists(context_mask):
+            max_neg_value = -torch.finfo(sim.dtype).max
+            context_mask = rearrange(context_mask, 'b n c -> b 1 n 1 c')
+            sim = sim.masked_fill(~context_mask, max_neg_value)
+
+        attn = sim.softmax(dim = -1)
+
+        out = einsum('b h n i j, b h n j d -> b h n i d', attn, v)
+        out = rearrange(out, 'b h n c d -> b (n c) (h d)')
+        out = self.to_out(out)
+
+        # shift back to original sequence
+
+        out = F.pad(out, (0, 0, seq_out_left_pad, seq_out_right_pad), value = 0.)
+
+        # mask src sequence, if mask was passed in (extra insurance)
+
+        if exists(mask):
+            mask = rearrange(mask, '... -> ... 1')
+            out = out.masked_fill(~mask, 0.)
+
+        return out
+
 # transformer
 
 class Transformer(nn.Module):
