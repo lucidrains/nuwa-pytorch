@@ -978,7 +978,8 @@ class CrossModalityCrossAttention(nn.Module):
         context_dim = None,
         has_start_token = True,
         context_has_start_token = True,
-        norm_context = True
+        norm_context = True,
+        dropout = 0.
     ):
         super().__init__()
         context_dim = default(context_dim, dim)
@@ -996,6 +997,9 @@ class CrossModalityCrossAttention(nn.Module):
 
         self.null_k = nn.Parameter(torch.randn(heads, dim_head))
         self.null_v = nn.Parameter(torch.randn(heads, dim_head))
+
+        self.talking_heads = nn.Conv3d(heads, heads, 1)
+        self.dropout = nn.Dropout(dropout)
 
         self.has_start_token = has_start_token
         self.context_has_start_token = context_has_start_token
@@ -1090,6 +1094,9 @@ class CrossModalityCrossAttention(nn.Module):
             sim = sim.masked_fill(~context_mask, max_neg_value)
 
         attn = stable_softmax(sim, dim = -1)
+        attn = self.dropout(attn)
+
+        attn = self.talking_heads(attn)
 
         out = einsum('b h n i j, b h n j d -> b h n i d', attn, v)
         out = rearrange(out, 'b h n c d -> b (n c) (h d)')
