@@ -751,7 +751,7 @@ class Sparse3DNA(nn.Module):
 
             # attention
 
-            attn = sim.softmax(dim = -1)
+            attn = stable_softmax(sim, dim = -1)
 
             attn = rearrange(attn, '(b h) ... -> b h ...', h = h)
             attn = self.talking_heads(attn)
@@ -1083,7 +1083,7 @@ class CrossModalityCrossAttention(nn.Module):
             context_mask = rearrange(context_mask, 'b n c -> b 1 n 1 c')
             sim = sim.masked_fill(~context_mask, max_neg_value)
 
-        attn = sim.softmax(dim = -1)
+        attn = stable_softmax(sim, dim = -1)
 
         out = einsum('b h n i j, b h n j d -> b h n i d', attn, v)
         out = rearrange(out, 'b h n c d -> b (n c) (h d)')
