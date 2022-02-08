@@ -994,8 +994,8 @@ class CrossModalityCrossAttention(nn.Module):
         self.to_kv = nn.Linear(context_dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
-        self.null_k = nn.Parameter(torch.randn(context_dim))
-        self.null_v = nn.Parameter(torch.randn(context_dim))
+        self.null_k = nn.Parameter(torch.randn(heads, dim_head))
+        self.null_v = nn.Parameter(torch.randn(heads, dim_head))
 
         self.has_start_token = has_start_token
         self.context_has_start_token = context_has_start_token
@@ -1076,11 +1076,17 @@ class CrossModalityCrossAttention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, 'b n c (h d) -> b h n c d', h = self.heads), (q, k, v))
         q = q * self.scale
 
+        null_k, null_v = map(lambda t: repeat(t, 'h d -> b h n 1 d', b = q.shape[0], n = q.shape[2]), (self.null_k, self.null_v))
+
+        k = torch.cat((null_k, k), dim = -2)
+        v = torch.cat((null_v, v), dim = -2)
+
         sim = einsum('b h n i d, b h n j d -> b h n i j', q, k)
 
         if exists(context_mask):
             max_neg_value = -torch.finfo(sim.dtype).max
             context_mask = rearrange(context_mask, 'b n c -> b 1 n 1 c')
+            context_mask = F.pad(context_mask, (1, 0), value = True) # null key / value
             sim = sim.masked_fill(~context_mask, max_neg_value)
 
         attn = stable_softmax(sim, dim = -1)
