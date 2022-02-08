@@ -988,7 +988,7 @@ class CrossModalityCrossAttention(nn.Module):
         inner_dim  = dim_head * heads
 
         self.norm = nn.LayerNorm(dim)
-        self.context_norm = nn.LayerNorm(context_dim)
+        self.context_norm = nn.LayerNorm(context_dim) if norm_context else nn.Identity()
 
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(context_dim, inner_dim * 2, bias = False)
