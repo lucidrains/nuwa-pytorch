@@ -1072,6 +1072,11 @@ class CrossModalityCrossAttention(nn.Module):
             seq = seq[:, :context_num_chunks]
             seq_out_right_pad += self.chunk_size * (seq_num_chunks - context_num_chunks)
 
+        # pre layernorm
+
+        seq = self.norm(seq)
+        context = self.context_norm(context)
+
         # attention time!
 
         q = self.to_q(seq)
