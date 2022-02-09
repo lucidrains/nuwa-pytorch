@@ -978,7 +978,8 @@ class CrossModalityCrossAttention(nn.Module):
         context_dim = None,
         has_start_token = True,
         context_has_start_token = True,
-        norm_context = True,
+        norm = False,
+        norm_context = False,
         dropout = 0.
     ):
         super().__init__()
@@ -988,7 +989,7 @@ class CrossModalityCrossAttention(nn.Module):
         self.scale = dim_head ** -0.5
         inner_dim  = dim_head * heads
 
-        self.norm = nn.LayerNorm(dim)
+        self.norm = nn.LayerNorm(dim) if norm else nn.Identity()
         self.context_norm = nn.LayerNorm(context_dim) if norm_context else nn.Identity()
 
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
