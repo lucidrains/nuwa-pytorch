@@ -1015,6 +1015,8 @@ class CrossModalityCrossAttention(nn.Module):
         mask = None,
         context_mask = None
     ):
+        seq_shape, device = seq.shape, seq.device
+
         # get lengths of sequence and context, excluding start token
 
         seq_len = seq.shape[-2] - (1 if self.has_start_token else 0)
@@ -1072,6 +1074,11 @@ class CrossModalityCrossAttention(nn.Module):
 
             seq = seq[:, :context_num_chunks]
             seq_out_right_pad += self.chunk_size * (seq_num_chunks - context_num_chunks)
+
+        # early exit if nothing to attend to
+
+        if context.shape[1] == 0:
+            return torch.zeros(seq_shape, device = device)
 
         # pre layernorm
 
@@ -1342,6 +1349,171 @@ class ReversibleTransformer(nn.Module):
         x = self.net(x, **kwargs)
         return self.norm(x)
 
+# dual modality decoder (for video and audio synthesis)
+
+class DualModalityDecoder(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        depth,
+        num_audio_tokens_per_video_frame,
+        num_video_tokens_per_frame,
+        heads = 8,
+        dim_head = 64,
+        ff_mult = 4,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        ff_chunk_size = None,
+        sparse_3dna_attn = False,
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_video_shape = None,
+        sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilations = (1,),
+        shift_video_tokens = False,
+        cross_modality_attn_every = 3
+    ):
+        super().__init__()
+        assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+
+        self.layers = MList([])
+        self.layer_types = []
+
+        def intra_modality_attn(sparse_3dna_attn):
+            if sparse_3dna_attn:
+                dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+
+                self_attn = Sparse3DNA(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    causal = True,
+                    kernel_size = sparse_3dna_kernel_size,
+                    dilation = dilation,
+                    video_shape = sparse_3dna_video_shape,
+                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                )
+            else:
+                self_attn = Attention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    causal = True,
+                    dropout = attn_dropout
+                )
+
+            cross_attn = Attention(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                dropout = attn_dropout
+            )
+
+            ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
+
+            if sparse_3dna_attn and shift_video_tokens:
+                fmap_size = sparse_3dna_video_shape[-1]
+                self_attn = ShiftVideoTokens(self_attn, image_size = fmap_size)
+                ff        = ShiftVideoTokens(ff, image_size = fmap_size)
+
+            return MList([
+                SandwichNorm(dim = dim, fn = self_attn),
+                SandwichNorm(dim = dim, fn = cross_attn),
+                SandwichNorm(dim = dim, fn = ff)
+            ])
+
+        def inter_modality_attn(chunk_size, context_chunk_size):
+            cross_modality_attn = CrossModalityCrossAttention(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                chunk_size = chunk_size,
+                context_chunk_size = context_chunk_size,
+                has_start_token = True,
+                context_has_start_token = True
+            )
+
+            cross_modality_ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
+
+            return MList([
+                SandwichNorm(dim = dim, fn = cross_modality_attn),
+                SandwichNorm(dim = dim, fn = cross_modality_ff),
+            ])
+
+        for ind in range(depth):
+            video_modality_attn = intra_modality_attn(sparse_3dna_attn = sparse_3dna_attn)
+            audio_modality_attn = intra_modality_attn(sparse_3dna_attn = False)
+
+            self.layer_types.append('intra_modality')
+
+            self.layers.append(MList([
+                video_modality_attn,
+                audio_modality_attn,
+            ]))
+
+            if ((ind + 1) % cross_modality_attn_every) == 0:
+                self.layer_types.append('inter_modality')
+
+                video_to_audio_attn = inter_modality_attn(num_video_tokens_per_frame, num_audio_tokens_per_video_frame)
+                audio_to_video_attn = inter_modality_attn(num_audio_tokens_per_video_frame, num_video_tokens_per_frame)
+
+                self.layers.append(MList([
+                    video_to_audio_attn,
+                    audio_to_video_attn
+                ]))
+
+        self.video_norm = StableLayerNorm(dim)
+        self.audio_norm = StableLayerNorm(dim)
+
+    def forward(
+        self,
+        video,
+        audio,
+        *,
+        context,
+        audio_mask = None,
+        video_mask = None,
+        context_mask = None,
+        **kwargs
+    ):
+        for blocks, layer_type in zip(self.layers, self.layer_types):
+            if layer_type == 'intra_modality':
+                (video_self_attn, video_cross_attn, video_ff), (audio_self_attn, audio_cross_attn, audio_ff) = blocks
+
+                video_ = video_self_attn(video, mask = video_mask) + video
+                video_ = video_cross_attn(video_, context = context, mask = video_mask, context_mask = context_mask) + video_
+                video_ = video_ff(video_) + video_
+
+                audio_ = audio_self_attn(audio, mask = audio_mask) + audio
+                audio_ = audio_cross_attn(audio_, context = context, mask = audio_mask, context_mask = context_mask) + audio_
+                audio_ = audio_ff(audio_) + audio_
+
+            elif layer_type == 'inter_modality':
+                (video_to_audio_attn, video_ff), (audio_to_video_attn, audio_ff) = blocks
+
+                video_ = video_to_audio_attn(
+                    video,
+                    context = audio,
+                    mask = video_mask,
+                    context_mask = audio_mask
+                ) + video
+
+                audio_ = audio_to_video_attn(
+                    audio,
+                    context = video,
+                    mask = audio_mask,
+                    context_mask = video_mask
+                ) + audio
+
+                video_ = video_ff(video_) + video_
+                audio_ = audio_ff(audio_) + audio_
+            else:
+                raise ValueError(f'unknown layer type {layer_type}')
+
+            video, audio = video_, audio_
+
+        return self.video_norm(video), self.audio_norm(audio)
+
 # embeddings
 
 class Embedding(nn.Module):
@@ -1455,7 +1627,7 @@ class NUWA(nn.Module):
 
         sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
 
-        dec_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+        dec_transformer_klass = Transformer if not dec_reversible else ReversibleTransformer
 
         self.video_transformer = dec_transformer_klass(
             dim = dim,
@@ -1611,6 +1783,277 @@ class NUWA(nn.Module):
         loss = F.cross_entropy(rearrange(logits, 'b n c -> b c n'), frame_indices)
         return loss
 
+# generating video and audio
+
+class NUWAVideoAudio(nn.Module):
+    def __init__(
+        self,
+        *,
+        vae,
+        dim,
+        image_size,
+        num_audio_tokens,
+        num_audio_tokens_per_video_frame,
+        max_video_frames = 5,
+        text_num_tokens,
+        text_max_seq_len = 256,
+        text_enc_depth = 6,
+        text_enc_dim_head = 64,
+        text_enc_heads = 8,
+        enc_reversible = False,
+        dec_depth = 6,
+        dec_dim_head = 64,
+        dec_heads = 8,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        ff_chunk_size = None,
+        embed_gradient_frac = 0.2,
+        shift_video_tokens = True,
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilation = 1,
+        audio_loss_weight = 1.,
+        cross_modality_attn_every = 3
+    ):
+        super().__init__()
+        self.vae = vae
+        vae_num_layers = vae.num_layers
+        num_image_tokens = vae.codebook_size
+
+        self.text_max_seq_len = text_max_seq_len
+        self.text_embedding = Embedding(text_num_tokens, dim, frac_gradient = embed_gradient_frac)
+        self.text_pos_embedding = Embedding(text_max_seq_len, dim)
+
+        enc_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+
+        self.text_transformer = enc_transformer_klass(
+            dim = dim,
+            depth = text_enc_depth,
+            heads = text_enc_heads,
+            dim_head = text_enc_dim_head,
+            attn_dropout = attn_dropout,
+            ff_dropout = ff_dropout
+        )
+
+        # video related params
+
+        self.video_bos = nn.Parameter(torch.randn(dim))
+        self.image_embedding = Embedding(num_image_tokens, dim, frac_gradient = embed_gradient_frac)
+
+        fmap_size = image_size // (2 ** vae_num_layers)
+
+        self.video_fmap_size = fmap_size
+        self.max_video_frames = max_video_frames
+        video_shape = (max_video_frames, fmap_size, fmap_size)
+
+        self.video_pos_emb = AxialPositionalEmbedding(dim, shape = video_shape)
+
+        # audio related params
+
+        self.audio_bos = nn.Parameter(torch.randn(dim))
+        self.audio_embedding = Embedding(num_audio_tokens, dim, frac_gradient = embed_gradient_frac)
+
+        max_audio_seq_len = num_audio_tokens_per_video_frame * max_video_frames
+        self.audio_pos_emb = nn.Embedding(max_audio_seq_len, dim)
+
+        self.audio_loss_weight = audio_loss_weight
+
+        # cycle dilation for sparse 3d-nearby attention
+
+        sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
+
+        self.video_audio_transformer = DualModalityDecoder(
+            dim = dim,
+            depth = dec_depth,
+            heads = dec_heads,
+            dim_head = dec_dim_head,
+            attn_dropout = attn_dropout,
+            ff_dropout = ff_dropout,
+            ff_chunk_size = ff_chunk_size,
+            shift_video_tokens = shift_video_tokens,
+            sparse_3dna_video_shape = video_shape,
+            sparse_3dna_attn = True,
+            sparse_3dna_kernel_size = sparse_3dna_kernel_size,
+            sparse_3dna_dilations = sparse_3dna_dilations,
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+            num_audio_tokens_per_video_frame = num_audio_tokens_per_video_frame,
+            num_video_tokens_per_frame = fmap_size * fmap_size,
+            cross_modality_attn_every = cross_modality_attn_every
+        )
+
+        self.to_video_logits = nn.Linear(dim, num_image_tokens)
+        self.to_audio_logits = nn.Linear(dim, num_audio_tokens)
+
+    def embed_text(self, text, mask = None):
+        batch, seq_len, device = *text.shape, text.device
+        assert seq_len <= self.text_max_seq_len, 'your input text has a greater length than what was designated on initialization'
+
+        tokens = self.text_embedding(text)
+        pos_emb = self.text_pos_embedding(torch.arange(seq_len, device = device))
+        tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
+
+        return self.text_transformer(
+            tokens,
+            mask = mask
+        )
+
+    @torch.no_grad()
+    @eval_decorator
+    def generate(
+        self,
+        *,
+        text,
+        filter_thres = 0.9,
+        temperature = 1.,
+        decode_max_batchsize = 10,
+        cond_scale = 2.,
+        num_frames = None
+    ):
+        batch, seq_len, device = *text.shape, text.device
+
+        text_mask = text != 0
+        text_embeds = self.embed_text(text, mask = text_mask)
+
+        video_bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
+        audio_bos = repeat(self.audio_bos, 'd -> b 1 d', b = batch)
+
+        video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
+        audio_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
+
+        num_tokens_per_frame = self.video_fmap_size ** 2
+
+        num_frames = default(num_frames, self.max_video_frames)
+        total_video_tokens =  num_tokens_per_frame * num_frames
+        max_video_tokens = num_tokens_per_frame * self.max_video_frames
+
+        pos_emb = self.video_pos_emb()
+
+        for ind in range(total_video_tokens):
+            video_indices_input = video_indices
+
+            num_video_tokens = video_indices.shape[1]
+            if num_video_tokens > max_video_tokens:
+                curr_frame_tokens = num_video_tokens % num_tokens_per_frame
+                lookback_tokens = (self.max_video_frames - (0 if curr_frame_tokens == 0 else 1)) * num_tokens_per_frame + curr_frame_tokens
+                video_indices_input = video_indices[:, -lookback_tokens:]
+
+            # prep video embeddings
+
+            frame_embeddings = self.image_embedding(video_indices_input)
+            frame_embeddings = pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
+            frame_embeddings = torch.cat((video_bos, frame_embeddings), dim = 1)
+
+            # prep audio embeddings
+
+            audio_embeddings = self.audio_embedding(audio_indices)
+            audio_pos_emb = self.audio_pos_emb(torch.arange(audio_embeddings.shape[1], device = device))
+            audio_pos_emb = rearrange(audio_pos_emb, 'n d -> 1 n d')
+            audio_embeddings = audio_embeddings + audio_pos_emb
+            audio_embeddings = torch.cat((audio_bos, audio_embeddings), dim = 1)
+
+            frame_embeddings, _ = self.video_audio_transformer(
+                frame_embeddings,
+                audio_embeddings,
+                context = text_embeds,
+                context_mask = text_mask
+            )
+
+            logits = self.to_video_logits(frame_embeddings)
+
+            if cond_scale != 1:
+                # discovery by Katherine Crowson
+                # https://twitter.com/RiversHaveWings/status/1478093658716966912
+                uncond_frame_embeddings, _ = self.video_audio_transformer(
+                    frame_embeddings,
+                    audio_embeddings,
+                    context = text_embeds,
+                    context_mask = torch.zeros_like(text_mask).bool()
+                )
+
+                uncond_logits = self.to_video_logits(uncond_frame_embeddings)
+                logits = uncond_logits + (logits - uncond_logits) * cond_scale
+
+            logits = logits[:, -1, :]
+
+            filtered_logits = top_k(logits, thres = filter_thres)
+            sample = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
+            sample = rearrange(sample, 'b -> b 1')
+            video_indices = torch.cat((video_indices, sample), dim = 1)
+
+        codes = self.vae.codebook[video_indices]
+        codes = rearrange(codes, 'b (f h w) d -> (b f) d h w', h = self.video_fmap_size, w = self.video_fmap_size)
+
+        image_reconstructions = batch_process(codes, self.vae.decode, chunks = decode_max_batchsize)
+        video = rearrange(image_reconstructions, '(b f) d h w -> b f d h w', b = batch)
+        return video
+
+    def forward(
+        self,
+        *,
+        text,
+        video,
+        audio,
+        return_loss = False,
+        cond_dropout_prob = 0.2
+    ):
+        batch, seq_len, frames, device = *text.shape, video.shape[1], text.device
+
+        text_mask = text != 0
+        text_embeds = self.embed_text(text, mask = text_mask)
+
+        # prep video representation
+
+        assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
+
+        frame_indices = self.vae.get_video_indices(video)
+        frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
+        frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
+
+        frame_embeddings = self.image_embedding(frame_indices_input)
+        frame_embeddings = self.video_pos_emb()[:, :-1] + frame_embeddings
+
+        video_bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
+        frame_embeddings = torch.cat((video_bos, frame_embeddings), dim = 1)
+
+        # prep audio representations
+
+        audio_indices_input = audio[:, :-1] if return_loss else audio
+
+        audio_embeddings = self.audio_embedding(audio_indices_input)
+        audio_pos_emb = self.audio_pos_emb(torch.arange(audio_embeddings.shape[1], device = device))
+        audio_embeddings = audio_embeddings + rearrange(audio_pos_emb, 'n d -> 1 n d')
+
+        audio_bos = repeat(self.audio_bos, 'd -> b 1 d', b = batch)
+        audio_embeddings = torch.cat((audio_bos, audio_embeddings), dim = 1)
+
+        # null conditions, for super-conditioning
+
+        if self.training and cond_dropout_prob > 0:
+            # dropout condition randomly
+            # presented in https://openreview.net/forum?id=qw8AKxfYbI
+            uncond_mask = prob_mask_like((batch,), cond_dropout_prob, device = device)
+            text_mask *= rearrange(~uncond_mask, 'b -> b 1')
+
+        # twin attention towers for video and audio, with efficient chunked cross modality attention
+
+        frame_embeddings, audio_embeddings = self.video_audio_transformer(
+            frame_embeddings,
+            audio_embeddings,
+            context = text_embeds,
+            context_mask = text_mask
+        )
+
+        video_logits = self.to_video_logits(frame_embeddings)
+        audio_logits = self.to_audio_logits(audio_embeddings)
+
+        if not return_loss:
+            return video_logits, audio_logits
+
+        video_loss = F.cross_entropy(rearrange(video_logits, 'b n c -> b c n'), frame_indices)
+        audio_loss = F.cross_entropy(rearrange(audio_logits, 'b n c -> b c n'), audio)
+
+        return video_loss + audio_loss * self.audio_loss_weight
+
 # main class for learning on sketches
 
 class NUWASketch(nn.Module):
@@ -1703,7 +2146,7 @@ class NUWASketch(nn.Module):
         # cycle dilation for sparse 3d-nearby attention
 
         cross_2dna_dilations = tuple(range(1, cross_2dna_dilation + 1)) if not isinstance(cross_2dna_dilation, (list, tuple)) else cross_2dna_dilation
-        dec_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
+        dec_transformer_klass = Transformer if not dec_reversible else ReversibleTransformer
 
         self.video_transformer = dec_transformer_klass(
             dim = dim,
