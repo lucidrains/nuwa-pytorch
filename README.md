@@ -257,7 +257,7 @@ video, audio = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256),
 
 ```
 
-- [ ] make dual decoder reversible
+- [ ] make dual decoder reversible (refashion from https://github.com/lucidrains/alphafold2/blob/main/alphafold2_pytorch/reversible.py#L63-L66)
 - [ ] caching on inference
 
 ## Trainers
