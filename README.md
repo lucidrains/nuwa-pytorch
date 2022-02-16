@@ -334,14 +334,15 @@ vae = VQGanVAE(
 - [x] able to add convnext blocks to other layers in vqgan vae
 - [x] offer vqvae training script
 - [x] handle variable lengthed sketches, accept a mask on the sketch frames dimension
+- [x] take care of audio transformer and cross modality attention
+- [x] add audio transformer, and build audio / video nearby cross attention
 - [ ] add cosine sim attention from swinv2 as an option
-- [ ] take care of audio transformer and cross modality attention
-- [ ] add audio transformer, and build audio / video nearby cross attention
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] rotary embeddings for encoder
 - [ ] build NUWA controller class that can accept text or sketch
 - [ ] key masking for 3dna attention - for variable sketch length masking
+- [ ] figure out spec vqgan and fit it into the framework, take care of audio encoding / decoding automatically
 
 ## Citations
 
