@@ -1858,6 +1858,11 @@ class NUWAVideoAudio(nn.Module):
 
         self.audio_loss_weight = audio_loss_weight
 
+        # num tokens per video frame
+
+        self.num_video_tokens_per_frame = fmap_size ** 2
+        self.num_audio_tokens_per_video_frame = num_audio_tokens_per_video_frame
+
         # cycle dilation for sparse 3d-nearby attention
 
         sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
@@ -1910,6 +1915,7 @@ class NUWAVideoAudio(nn.Module):
         num_frames = None
     ):
         batch, seq_len, device = *text.shape, text.device
+        num_tokens_per_frame, num_audio_tokens_per_video_frame = self.num_video_tokens_per_frame, self.num_audio_tokens_per_video_frame
 
         text_mask = text != 0
         text_embeds = self.embed_text(text, mask = text_mask)
@@ -1920,19 +1926,23 @@ class NUWAVideoAudio(nn.Module):
         video_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
         audio_indices = torch.empty((batch, 0), device = device, dtype = torch.long)
 
-        num_tokens_per_frame = self.video_fmap_size ** 2
-
         num_frames = default(num_frames, self.max_video_frames)
-        total_video_tokens =  num_tokens_per_frame * num_frames
-        max_video_tokens = num_tokens_per_frame * self.max_video_frames
 
-        pos_emb = self.video_pos_emb()
+        total_video_tokens = num_frames * num_tokens_per_frame
+        total_audio_tokens = num_frames * num_audio_tokens_per_video_frame
 
-        for ind in range(total_video_tokens):
+        video_pos_emb = self.video_pos_emb()
+
+        is_decoding_video = True # toggle to False to decode audio, alternating between video and audio
+
+        while video_indices.shape[1] < total_video_tokens \
+            or audio_indices.shape[1] < total_audio_tokens:
+
             video_indices_input = video_indices
+            audio_indices_input = audio_indices
 
             num_video_tokens = video_indices.shape[1]
-            if num_video_tokens > max_video_tokens:
+            if num_video_tokens > total_video_tokens:
                 curr_frame_tokens = num_video_tokens % num_tokens_per_frame
                 lookback_tokens = (self.max_video_frames - (0 if curr_frame_tokens == 0 else 1)) * num_tokens_per_frame + curr_frame_tokens
                 video_indices_input = video_indices[:, -lookback_tokens:]
@@ -1940,37 +1950,37 @@ class NUWAVideoAudio(nn.Module):
             # prep video embeddings
 
             frame_embeddings = self.image_embedding(video_indices_input)
-            frame_embeddings = pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
+            frame_embeddings = video_pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
             frame_embeddings = torch.cat((video_bos, frame_embeddings), dim = 1)
 
             # prep audio embeddings
 
-            audio_embeddings = self.audio_embedding(audio_indices)
+            audio_embeddings = self.audio_embedding(audio_indices_input)
             audio_pos_emb = self.audio_pos_emb(torch.arange(audio_embeddings.shape[1], device = device))
             audio_pos_emb = rearrange(audio_pos_emb, 'n d -> 1 n d')
             audio_embeddings = audio_embeddings + audio_pos_emb
             audio_embeddings = torch.cat((audio_bos, audio_embeddings), dim = 1)
 
-            frame_embeddings, _ = self.video_audio_transformer(
+            frame_embeddings, audio_embeddings = self.video_audio_transformer(
                 frame_embeddings,
                 audio_embeddings,
                 context = text_embeds,
                 context_mask = text_mask
             )
 
-            logits = self.to_video_logits(frame_embeddings)
+            logits = self.to_video_logits(frame_embeddings) if is_decoding_video else self.to_audio_logits(audio_embeddings)
 
             if cond_scale != 1:
                 # discovery by Katherine Crowson
                 # https://twitter.com/RiversHaveWings/status/1478093658716966912
-                uncond_frame_embeddings, _ = self.video_audio_transformer(
+                uncond_frame_embeddings, uncond_audio_embeddings = self.video_audio_transformer(
                     frame_embeddings,
                     audio_embeddings,
                     context = text_embeds,
                     context_mask = torch.zeros_like(text_mask).bool()
                 )
 
-                uncond_logits = self.to_video_logits(uncond_frame_embeddings)
+                uncond_logits = self.to_video_logits(uncond_frame_embeddings) if is_decoding_video else self.to_audio_logits(uncond_audio_embeddings)
                 logits = uncond_logits + (logits - uncond_logits) * cond_scale
 
             logits = logits[:, -1, :]
@@ -1978,14 +1988,32 @@ class NUWAVideoAudio(nn.Module):
             filtered_logits = top_k(logits, thres = filter_thres)
             sample = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
             sample = rearrange(sample, 'b -> b 1')
-            video_indices = torch.cat((video_indices, sample), dim = 1)
+
+            if is_decoding_video:
+                video_indices = torch.cat((video_indices, sample), dim = 1)
+                at_frame_boundary = (video_indices.shape[1] % num_tokens_per_frame) == 0
+            else:
+                audio_indices = torch.cat((audio_indices, sample), dim = 1)
+                at_frame_boundary = (audio_indices.shape[1] % num_audio_tokens_per_video_frame) == 0
+
+            # alternate between audio and video decoding, one video frame at a time
+
+            if at_frame_boundary:
+                is_decoding_video = not is_decoding_video
+
+        # decoding video codebook indices with VQGan
 
         codes = self.vae.codebook[video_indices]
         codes = rearrange(codes, 'b (f h w) d -> (b f) d h w', h = self.video_fmap_size, w = self.video_fmap_size)
 
         image_reconstructions = batch_process(codes, self.vae.decode, chunks = decode_max_batchsize)
         video = rearrange(image_reconstructions, '(b f) d h w -> b f d h w', b = batch)
-        return video
+
+        # just return audio token indices for now
+
+        audio = audio_indices
+
+        return video, audio
 
     def forward(
         self,

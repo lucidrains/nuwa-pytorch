@@ -192,6 +192,74 @@ video = nuwa.generate(sketch = sketch, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ```
 
+## Text to Video and Audio (wip)
+
+This repository will also offer a variant of NUWA that can produce both video and audio. For now, the audio will need to be encoded manually.
+
+```python
+import torch
+from nuwa_pytorch import NUWAVideoAudio, VQGanVAE
+
+# autoencoder
+
+vae = VQGanVAE(
+    dim = 64,
+    num_layers = 4,
+    image_size = 256,
+    num_conv_blocks = 2,
+    vq_codebook_size = 100
+)
+
+# NUWA transformer
+
+nuwa = NUWAVideoAudio(
+    vae = vae,
+    dim = 512,
+    num_audio_tokens = 2048,                # codebook size for audio tokens
+    num_audio_tokens_per_video_frame = 32,  # number of audio tokens per video frame
+    cross_modality_attn_every = 3,          # cross modality attention every N layers
+    text_num_tokens = 20000,                # number of text tokens
+    text_enc_depth = 1,                     # text encoder depth
+    text_enc_heads = 8,                     # number of attention heads for encoder
+    text_max_seq_len = 256,                 # max sequence length of text conditioning tokens (keep at 256 as in paper, or shorter, if your text is not that long)
+    max_video_frames = 10,                  # number of video frames
+    image_size = 256,                       # size of each frame of video
+    dec_depth = 4,                          # video decoder depth
+    dec_heads = 8,                          # number of attention heads in decoder
+    enc_reversible = True,                  # reversible encoders, if you need it
+    attn_dropout = 0.05,                    # dropout for attention
+    ff_dropout = 0.05,                      # dropout for feedforward
+    sparse_3dna_kernel_size = (5, 3, 3),    # kernel size of the sparse 3dna attention. can be a single value for frame, height, width, or different values (to simulate axial attention, etc)
+    sparse_3dna_dilation = (1, 2, 4),       # cycle dilation of 3d conv attention in decoder, for more range
+    shift_video_tokens = True               # cheap relative positions for sparse 3dna transformer, by shifting along spatial dimensions by one
+).cuda()
+
+# data
+
+text = torch.randint(0, 20000, (1, 256)).cuda()
+audio = torch.randint(0, 2048, (1, 32 * 10)).cuda() # (batch, audio tokens per frame * max video frames)
+video = torch.randn(1, 10, 3, 256, 256).cuda() # (batch, frames, channels, height, width)
+
+loss = nuwa(
+    text = text,
+    video = video,
+    audio = audio,
+    return_loss = True  # set this to True, only for training, to return cross entropy loss
+)
+
+loss.backward()
+
+# do above with as much data as possible
+
+# then you can generate a video from text
+
+video, audio = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256), (1, 32 * 5 == 160)
+
+```
+
+- [ ] make dual decoder reversible
+- [ ] caching on inference
+
 ## Trainers
 
 This library will offer some utilities to make training easier. For starters, you can use the `VQGanVAETrainer` class to take care of training the `VQGanVAE`. Simply wrap the model and also pass in the image folder path as well as the various training hyperparameters.
@@ -283,6 +351,28 @@ vae = VQGanVAE(
     author  = {Chenfei Wu and Jian Liang and Lei Ji and Fan Yang and Yuejian Fang and Daxin Jiang and Nan Duan},
     year    = {2021},
     eprint  = {2111.12417},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
+
+```bibtex
+@misc{esser2021taming,
+    title   = {Taming Transformers for High-Resolution Image Synthesis},
+    author  = {Patrick Esser and Robin Rombach and Björn Ommer},
+    year    = {2021},
+    eprint  = {2012.09841},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
+
+```bibtex
+@misc{iashin2021taming,
+    title   = {Taming Visually Guided Sound Generation},
+    author  = {Vladimir Iashin and Esa Rahtu},
+    year    = {2021},
+    eprint  = {2110.08791},
     archivePrefix = {arXiv},
     primaryClass = {cs.CV}
 }
