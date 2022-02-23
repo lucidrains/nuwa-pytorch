@@ -12,6 +12,7 @@ from einops.layers.torch import Rearrange, Reduce
 from vector_quantize_pytorch import VectorQuantize as VQ
 
 from nuwa_pytorch.reversible import ReversibleSequence
+from nuwa_pytorch.reversible_video_audio import DualModalityReversibleSequence
 
 from unfoldNd import unfoldNd
 
@@ -1514,6 +1515,163 @@ class DualModalityDecoder(nn.Module):
 
         return self.video_norm(video), self.audio_norm(audio)
 
+class ReversibleDualModalityDecoder(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        depth,
+        num_audio_tokens_per_video_frame,
+        num_video_tokens_per_frame,
+        heads = 8,
+        dim_head = 64,
+        ff_mult = 4,
+        attn_dropout = 0.,
+        ff_dropout = 0.,
+        ff_chunk_size = None,
+        sparse_3dna_attn = False,
+        sparse_3dna_kernel_size = 3,
+        sparse_3dna_video_shape = None,
+        sparse_3dna_query_num_frames_chunk = None,
+        sparse_3dna_dilations = (1,),
+        shift_video_tokens = False,
+        cross_modality_attn_every = 3
+    ):
+        super().__init__()
+        assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
+
+        self.layers = MList([])
+        self.layer_types = []
+
+        norm_wrapper = lambda fn: SandwichNorm(dim = dim, fn = fn)
+        create_ff = lambda: FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
+
+        for ind in range(depth):
+            dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+
+            video_self_attn = Sparse3DNA(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                causal = True,
+                kernel_size = sparse_3dna_kernel_size,
+                dilation = dilation,
+                video_shape = sparse_3dna_video_shape,
+                query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+            )
+
+            audio_self_attn = Attention(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                causal = True,
+                dropout = attn_dropout
+            )
+
+            video_ff = create_ff()
+            audio_ff = create_ff()
+
+            if sparse_3dna_attn and shift_video_tokens:
+                fmap_size = sparse_3dna_video_shape[-1]
+                video_self_attn = ShiftVideoTokens(video_self_attn, image_size = fmap_size)
+                video_ff        = ShiftVideoTokens(video_ff, image_size = fmap_size)
+
+            self.layers.append(MList([
+                norm_wrapper(video_self_attn),
+                norm_wrapper(video_ff),
+                norm_wrapper(audio_self_attn),
+                norm_wrapper(audio_ff)
+            ]))
+
+            self.layer_types.append('intra_modality_self_attn')
+
+            video_cross_attn = Attention(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                dropout = attn_dropout
+            )
+
+            audio_cross_attn = Attention(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                dropout = attn_dropout
+            )
+
+            video_cross_ff = create_ff()
+            audio_cross_ff = create_ff()
+
+            self.layers.append(MList([
+                norm_wrapper(video_cross_attn),
+                norm_wrapper(video_cross_ff),
+                norm_wrapper(audio_cross_attn),
+                norm_wrapper(audio_cross_ff)
+            ]))
+
+            self.layer_types.append('intra_modality_cross_attn')
+
+            if ((ind + 1) % cross_modality_attn_every) == 0:
+                video_to_audio_attn = CrossModalityCrossAttention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    chunk_size = num_video_tokens_per_frame,
+                    context_chunk_size = num_audio_tokens_per_video_frame,
+                    has_start_token = True,
+                    context_has_start_token = True
+                )
+
+                video_cross_modality_ff = create_ff()
+
+                audio_to_video_attn = CrossModalityCrossAttention(
+                    dim = dim,
+                    heads = heads,
+                    dim_head = dim_head,
+                    chunk_size = num_audio_tokens_per_video_frame,
+                    context_chunk_size = num_video_tokens_per_frame,
+                    has_start_token = True,
+                    context_has_start_token = True
+                )
+
+                audio_cross_modality_ff = create_ff()
+
+                self.layers.append(MList([
+                    video_to_audio_attn,
+                    video_cross_modality_ff,
+                    audio_to_video_attn,
+                    audio_cross_modality_ff
+                ]))
+
+                self.layer_types.append('inter_modality_cross_attn')
+
+        self.net = DualModalityReversibleSequence(self.layers, self.layer_types)
+
+        self.video_norm = StableLayerNorm(dim)
+        self.audio_norm = StableLayerNorm(dim)
+
+    def forward(
+        self,
+        video,
+        audio,
+        *,
+        context,
+        audio_mask = None,
+        video_mask = None,
+        context_mask = None,
+        **kwargs
+    ):
+        video, audio = self.net(
+            video,
+            audio,
+            context = context,
+            audio_mask = audio_mask,
+            video_mask = video_mask,
+            context_mask = context_mask
+        )
+
+        return self.video_norm(video), self.audio_norm(audio)
+
 # embeddings
 
 class Embedding(nn.Module):
@@ -1801,6 +1959,7 @@ class NUWAVideoAudio(nn.Module):
         text_enc_dim_head = 64,
         text_enc_heads = 8,
         enc_reversible = False,
+        dec_reversible = True,
         dec_depth = 6,
         dec_dim_head = 64,
         dec_heads = 8,
@@ -1867,7 +2026,9 @@ class NUWAVideoAudio(nn.Module):
 
         sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
 
-        self.video_audio_transformer = DualModalityDecoder(
+        decoder_klass = ReversibleDualModalityDecoder if dec_reversible else DualModalityDecoder
+
+        self.video_audio_transformer = decoder_klass(
             dim = dim,
             depth = dec_depth,
             heads = dec_heads,

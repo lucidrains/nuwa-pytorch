@@ -227,6 +227,7 @@ nuwa = NUWAVideoAudio(
     dec_depth = 4,                          # video decoder depth
     dec_heads = 8,                          # number of attention heads in decoder
     enc_reversible = True,                  # reversible encoders, if you need it
+    dec_reversible = True,                  # quad-branched reversible network, for making depth of twin video / audio decoder independent of network depth. recommended to be turned on unless you have a ton of memory at your disposal
     attn_dropout = 0.05,                    # dropout for attention
     ff_dropout = 0.05,                      # dropout for feedforward
     sparse_3dna_kernel_size = (5, 3, 3),    # kernel size of the sparse 3dna attention. can be a single value for frame, height, width, or different values (to simulate axial attention, etc)
@@ -256,9 +257,6 @@ loss.backward()
 video, audio = nuwa.generate(text = text, num_frames = 5) # (1, 5, 3, 256, 256), (1, 32 * 5 == 160)
 
 ```
-
-- [ ] make dual decoder reversible (refashion from https://github.com/lucidrains/alphafold2/blob/main/alphafold2_pytorch/reversible.py#L63-L66)
-- [ ] caching on inference
 
 ## Trainers
 
@@ -336,6 +334,7 @@ vae = VQGanVAE(
 - [x] handle variable lengthed sketches, accept a mask on the sketch frames dimension
 - [x] take care of audio transformer and cross modality attention
 - [x] add audio transformer, and build audio / video nearby cross attention
+- [x] make dual decoder reversible
 - [ ] add cosine sim attention from swinv2 as an option
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
