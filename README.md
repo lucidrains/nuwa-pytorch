@@ -192,7 +192,7 @@ video = nuwa.generate(sketch = sketch, num_frames = 5) # (1, 5, 3, 256, 256)
 
 ```
 
-## Text to Video and Audio (wip)
+## Text to Video and Audio
 
 This repository will also offer a variant of NUWA that can produce both video and audio. For now, the audio will need to be encoded manually.
 
