@@ -452,6 +452,31 @@ class SandwichNorm(nn.Module):
         x = self.postnorm(x)
         return x
 
+# relative positional embedding (rotary)
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+
+    def forward(self, seq_len, device):
+        inv_freq = self.inv_freq
+        t = torch.arange(seq_len, device = device).type_as(inv_freq)
+        freqs = torch.einsum('i , j -> i j', t, inv_freq)
+        return torch.cat((freqs, freqs), dim = -1)
+
+def rotate_half(x):
+    x = rearrange(x, '... (j d) -> ... j d', j = 2)
+    x1, x2 = x.unbind(dim = -2)
+    return torch.cat((-x2, x1), dim = -1)
+
+def apply_rotary_pos_emb(freqs, t):
+    rot_dim = freqs.shape[-1]
+    t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+    t = (t * freqs.cos()) + (rotate_half(t) * freqs.sin())
+    return torch.cat((t, t_pass), dim = -1)
+
 # helper classes
 
 class ShiftVideoTokens(nn.Module):
@@ -589,7 +614,8 @@ class Attention(nn.Module):
         x,
         mask = None,
         context = None,
-        context_mask = None
+        context_mask = None,
+        rotary_pos_emb = None
     ):
         b, h, device = x.shape[0], self.heads, x.device
 
@@ -598,6 +624,12 @@ class Attention(nn.Module):
 
         qkv = (self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
+
+        # add rotary positional embedding, if exists
+
+        if not has_context and exists(rotary_pos_emb):
+            apply_rotary = partial(apply_rotary_pos_emb, rotary_pos_emb)
+            q, k, v = map(apply_rotary, (q, k, v))
 
         # add null key / values, needed for condition dropout
 
@@ -1196,7 +1228,8 @@ class Transformer(nn.Module):
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
-        shift_video_tokens = False
+        shift_video_tokens = False,
+        rotary_pos_emb = False
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
@@ -1306,7 +1339,8 @@ class ReversibleTransformer(nn.Module):
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
-        shift_video_tokens = False
+        shift_video_tokens = False,
+        rotary_pos_emb = False
     ):
         super().__init__()
         assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
@@ -1380,7 +1414,7 @@ class ReversibleTransformer(nn.Module):
         route_context = ((False, False), *attn_context_layer) * depth
 
         context_route_map = {'context': route_context, 'context_mask': route_context} if cross_attend else {}
-        attn_route_map = {'mask': route_attn}
+        attn_route_map = {'mask': route_attn, 'rotary_pos_emb': route_attn}
 
         self.net = ReversibleSequence(self.layers, args_route = {**context_route_map, **attn_route_map})
         self.norm = StableLayerNorm(dim)
@@ -1779,6 +1813,7 @@ class NUWA(nn.Module):
         text_enc_depth = 6,
         text_enc_dim_head = 64,
         text_enc_heads = 8,
+        text_rotary_pos_emb = True,
         enc_reversible = False,
         dec_depth = 6,
         dec_dim_head = 64,
@@ -1800,7 +1835,11 @@ class NUWA(nn.Module):
 
         self.text_max_seq_len = text_max_seq_len
         self.text_embedding = Embedding(text_num_tokens, dim, frac_gradient = embed_gradient_frac)
-        self.text_pos_embedding = Embedding(text_max_seq_len, dim)
+
+        # positional embedding for text
+
+        self.text_abs_pos_emb = Embedding(text_max_seq_len, dim)  if not text_rotary_pos_emb else None
+        self.text_rotary_pos_emb = RotaryEmbedding(dim = min(32, text_enc_dim_head)) if text_rotary_pos_emb else None
 
         enc_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
 
@@ -1810,7 +1849,8 @@ class NUWA(nn.Module):
             heads = text_enc_heads,
             dim_head = text_enc_dim_head,
             attn_dropout = attn_dropout,
-            ff_dropout = ff_dropout
+            ff_dropout = ff_dropout,
+            rotary_pos_emb = text_rotary_pos_emb
         )
 
         self.video_bos = nn.Parameter(torch.randn(dim))
@@ -1855,12 +1895,19 @@ class NUWA(nn.Module):
         assert seq_len <= self.text_max_seq_len, 'your input text has a greater length than what was designated on initialization'
 
         tokens = self.text_embedding(text)
-        pos_emb = self.text_pos_embedding(torch.arange(seq_len, device = device))
-        tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
+
+        if exists(self.text_abs_pos_emb):
+            pos_emb = self.text_abs_pos_emb(torch.arange(seq_len, device = device))
+            tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
+
+        rotary_pos_emb = None
+        if exists(self.text_rotary_pos_emb):
+            rotary_pos_emb = self.text_rotary_pos_emb(seq_len, device = device)
 
         return self.text_transformer(
             tokens,
-            mask = mask
+            mask = mask,
+            rotary_pos_emb = rotary_pos_emb
         )
 
     @torch.no_grad()
@@ -2001,6 +2048,7 @@ class NUWAVideoAudio(nn.Module):
         text_enc_depth = 6,
         text_enc_dim_head = 64,
         text_enc_heads = 8,
+        text_rotary_pos_emb = False,
         enc_reversible = False,
         dec_reversible = True,
         dec_depth = 6,
@@ -2024,7 +2072,9 @@ class NUWAVideoAudio(nn.Module):
 
         self.text_max_seq_len = text_max_seq_len
         self.text_embedding = Embedding(text_num_tokens, dim, frac_gradient = embed_gradient_frac)
-        self.text_pos_embedding = Embedding(text_max_seq_len, dim)
+
+        self.text_abs_pos_emb = Embedding(text_max_seq_len, dim) if not text_rotary_pos_emb else None
+        self.text_rotary_pos_emb = RotaryEmbedding(dim = min(32, text_enc_dim_head)) if text_rotary_pos_emb else None
 
         enc_transformer_klass = Transformer if not enc_reversible else ReversibleTransformer
 
@@ -2098,12 +2148,19 @@ class NUWAVideoAudio(nn.Module):
         assert seq_len <= self.text_max_seq_len, 'your input text has a greater length than what was designated on initialization'
 
         tokens = self.text_embedding(text)
-        pos_emb = self.text_pos_embedding(torch.arange(seq_len, device = device))
-        tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
+
+        if exists(self.text_abs_pos_emb):
+            pos_emb = self.text_abs_pos_emb(torch.arange(seq_len, device = device))
+            tokens = tokens + rearrange(pos_emb, 'n d -> 1 n d')
+
+        rotary_pos_emb = None
+        if exists(self.text_rotary_pos_emb):
+            rotary_pos_emb = self.text_rotary_pos_emb(seq_len, device = device)
 
         return self.text_transformer(
             tokens,
-            mask = mask
+            mask = mask,
+            rotary_pos_emb = rotary_pos_emb
         )
 
     @torch.no_grad()
