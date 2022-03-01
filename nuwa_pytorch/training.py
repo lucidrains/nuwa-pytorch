@@ -5,6 +5,7 @@ import torch
 from torch import nn
 from torch.optim import AdamW, Adam
 
+from PIL import Image
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as T
 from torch.utils.data import Dataset, DataLoader
@@ -51,6 +52,34 @@ def get_optimizer(
 
 # classes
 
+class ImageDataset(Dataset):
+    def __init__(
+        self,
+        folder,
+        image_size,
+        exts = ['jpg', 'jpeg', 'png']
+    ):
+        super().__init__()
+        self.folder = folder
+        self.image_size = image_size
+        self.paths = [p for ext in exts for p in Path(f'{folder}').glob(f'**/*.{ext}')]
+
+        self.transform = T.Compose([
+            T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
+            T.Resize(image_size),
+            T.RandomHorizontalFlip(),
+            T.CenterCrop(image_size),
+            T.ToTensor()
+        ])
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        path = self.paths[index]
+        img = Image.open(path)
+        return self.transform(img)
+
 class VQGanVAETrainer(nn.Module):
     def __init__(
         self,
@@ -77,15 +106,7 @@ class VQGanVAETrainer(nn.Module):
 
         self.optim = Adam(vae.parameters(), lr = lr)
 
-        self.ds = ImageFolder(
-            folder,
-            T.Compose([
-                T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
-                T.Resize(image_size),
-                T.CenterCrop(image_size),
-                T.ToTensor()
-            ])
-        )
+        self.ds = ImageDataset(folder, image_size = image_size)
 
         self.dl = cycle(DataLoader(
             self.ds,
@@ -108,7 +129,7 @@ class VQGanVAETrainer(nn.Module):
 
             gen_loss = 0
             for _ in range(self.grad_accum_every):
-                img, _ = next(self.dl)
+                img = next(self.dl)
                 img = img.to(device)
 
                 loss = self.vae(img, return_loss = True)
@@ -123,7 +144,7 @@ class VQGanVAETrainer(nn.Module):
 
             discr_loss = 0
             for _ in range(self.grad_accum_every):
-                img, _ = next(self.dl)
+                img = next(self.dl)
                 img = img.to(device)
 
                 loss = self.vae(img, return_discr_loss = True)
@@ -143,7 +164,7 @@ class VQGanVAETrainer(nn.Module):
 
             if not (self.steps % self.save_results_every):
                 self.vae.eval()
-                imgs, _ = next(self.dl)
+                imgs = next(self.dl)
                 imgs = imgs.to(device)
 
                 recons = self.vae(imgs)
