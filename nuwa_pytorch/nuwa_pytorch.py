@@ -163,7 +163,7 @@ class Discriminator(nn.Module):
         self.to_logits = nn.Sequential( # return 5 x 5, for PatchGAN-esque training
             nn.Conv2d(dim, dim, 1),
             nn.ReLU(),
-            nn.Conv2d(dim, dim, 4)
+            nn.Conv2d(dim, 1, 4)
         )
 
     def forward(self, x):
@@ -197,6 +197,42 @@ class ConvNextBlock(nn.Module):
     def forward(self, x):
         return self.net(x) + x
 
+class VQGanAttention(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        dim_head = 64,
+        heads = 8
+    ):
+        super().__init__()
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        inner_dim = heads * dim_head
+
+        self.norm = LayerNormChan(dim)
+        self.to_qkv = nn.Conv2d(dim, inner_dim * 3, 1, bias = False)
+        self.to_out = nn.Conv2d(inner_dim, dim, 1)
+
+    def forward(self, x):
+        h = self.heads
+        height, width, residual = *x.shape[-2:], x.clone()
+
+        x = self.norm(x)
+
+        q, k, v = self.to_qkv(x).chunk(3, dim = 1)
+
+        q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h c (x y)', h = h), (q, k, v))
+        sim = einsum('b h c i, b h c j -> b h i j', q, k) * self.scale
+
+        attn = stable_softmax(sim, dim = -1)
+
+        out = einsum('b h i j, b h c j -> b h c i', attn, v)
+        out = rearrange(out, 'b h c (x y) -> b (h c) x y', x = height, y = width)
+        out = self.to_out(out)
+
+        return out + residual
+
 class VQGanVAE(nn.Module):
     def __init__(
         self,
@@ -214,6 +250,9 @@ class VQGanVAE(nn.Module):
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
         vq_kmeans_init = True,
+        use_attn = True,
+        attn_dim_head = 64,
+        attn_heads = 8,
         **kwargs
     ):
         super().__init__()
@@ -245,6 +284,10 @@ class VQGanVAE(nn.Module):
         for _ in range(num_conv_blocks):
             self.encoders.append(ConvNextBlock(dims[-1]))
             self.decoders.insert(0, ConvNextBlock(dims[-1]))
+
+        if use_attn:
+            self.encoders.append(VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
+            self.decoders.insert(0, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
 
         self.encoders.insert(0, nn.Conv2d(channels, dim, 3, padding = 1))
         self.decoders.append(nn.Conv2d(dim, channels, 1))
