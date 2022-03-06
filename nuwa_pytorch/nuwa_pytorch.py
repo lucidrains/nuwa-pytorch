@@ -250,6 +250,7 @@ class VQGanVAE(nn.Module):
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
         vq_kmeans_init = True,
+        vq_use_cosine_sim = True,
         use_attn = True,
         attn_dim_head = 64,
         attn_heads = 8,
@@ -301,6 +302,7 @@ class VQGanVAE(nn.Module):
             commitment_weight = vq_commitment_weight,
             accept_image_fmap = True,
             kmeans_init = vq_kmeans_init,
+            use_cosine_sim = vq_use_cosine_sim,
             **vq_kwargs
         )
 
