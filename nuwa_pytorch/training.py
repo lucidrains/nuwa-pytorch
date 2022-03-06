@@ -4,6 +4,7 @@ from pathlib import Path
 import torch
 from torch import nn
 from torch.optim import AdamW, Adam
+import numpy as np
 
 from PIL import Image
 from torchvision.datasets import ImageFolder
@@ -15,6 +16,9 @@ from einops import rearrange
 from nuwa_pytorch.nuwa_pytorch import VQGanVAE
 
 # helpers
+
+def exists(val):
+    return val is not None
 
 def cycle(dl):
     while True:
@@ -52,6 +56,38 @@ def get_optimizer(
 
 # classes
 
+class MemmappedImageDataset(Dataset):
+    def __init__(
+        self,
+        *,
+        path,
+        shape
+    ):
+        super().__init__()
+        path = Path(path)
+        assert path.exists(), f'path {path} must exist'
+        self.memmap = np.memmap(str(path), mode = 'r', dtype = np.uint8, shape = shape)
+
+        image_size = shape[-1]
+        self.transform = T.Compose([
+            T.Resize(image_size),
+            T.RandomHorizontalFlip(),
+            T.CenterCrop(image_size),
+            T.ToTensor()
+        ])
+
+    def __len__(self):
+        return self.memmap.shape[0]
+
+    def __getitem__(self, index):
+        arr = self.memmap[index]
+
+        if arr.shape[0] == 1:
+            arr = rearrange(arr, '1 ... -> ...')
+
+        img = Image.fromarray(arr)
+        return self.transform(img)
+
 class ImageDataset(Dataset):
     def __init__(
         self,
@@ -63,6 +99,8 @@ class ImageDataset(Dataset):
         self.folder = folder
         self.image_size = image_size
         self.paths = [p for ext in exts for p in Path(f'{folder}').glob(f'**/*.{ext}')]
+
+        print(f'{len(self.paths)} training samples found at {folder}')
 
         self.transform = T.Compose([
             T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
@@ -85,11 +123,13 @@ class VQGanVAETrainer(nn.Module):
         self,
         vae,
         *,
-        folder,
         num_train_steps,
         lr,
         batch_size,
         grad_accum_every,
+        images_memmap_path = None,
+        images_memmap_shape = None,
+        folder = None,
         save_results_every = 100,
         save_model_every = 1000,
         results_folder = './results'
@@ -106,7 +146,19 @@ class VQGanVAETrainer(nn.Module):
 
         self.optim = Adam(vae.parameters(), lr = lr)
 
-        self.ds = ImageDataset(folder, image_size = image_size)
+        # create dataset
+
+        assert exists(folder) ^ exists(images_memmap_path), 'either folder or memmap path to images must be supplied'
+
+        if exists(images_memmap_path):
+            assert exists(images_memmap_shape), 'shape of memmapped images must be supplied'
+
+        if exists(folder):
+            self.ds = ImageDataset(folder, image_size = image_size)
+        elif exists(images_memmap_path):
+            self.ds = MemmappedImageDataset(path = images_memmap_path, shape = images_memmap_shape)
+
+        # dataloader
 
         self.dl = cycle(DataLoader(
             self.ds,
@@ -142,25 +194,26 @@ class VQGanVAETrainer(nn.Module):
 
             # update discriminator
 
-            discr_loss = 0
-            for _ in range(self.grad_accum_every):
-                img = next(self.dl)
-                img = img.to(device)
+            if exists(self.vae.discr):
+                discr_loss = 0
+                for _ in range(self.grad_accum_every):
+                    img = next(self.dl)
+                    img = img.to(device)
 
-                loss = self.vae(img, return_discr_loss = True)
-                discr_loss += loss.item()
+                    loss = self.vae(img, return_discr_loss = True)
+                    discr_loss += loss.item()
 
-                (loss / self.grad_accum_every).backward()
+                    (loss / self.grad_accum_every).backward()
 
-            self.optim.step()
-            self.optim.zero_grad()
+                self.optim.step()
+                self.optim.zero_grad()
 
-            # log
+                # log
 
-            gen_loss /= self.grad_accum_every
-            discr_loss /= self.grad_accum_every
+                gen_loss /= self.grad_accum_every
+                discr_loss /= self.grad_accum_every
 
-            print(f'{self.steps}: vae loss: {gen_loss} - discr loss: {discr_loss}')
+                print(f'{self.steps}: vae loss: {gen_loss} - discr loss: {discr_loss}')
 
             if not (self.steps % self.save_results_every):
                 self.vae.eval()
@@ -177,14 +230,14 @@ class VQGanVAETrainer(nn.Module):
                 grid = make_grid(imgs_and_recons, nrow = 2, normalize = True, value_range = (-1, 1))
 
                 save_image(grid, str(self.results_folder / f'{self.steps}.png'))
-                print(f'saving to {str(self.results_folder)}')
+                print(f'{self.steps}: saving to {str(self.results_folder)}')
 
             if self.steps and not (self.steps % self.save_model_every):
                 state_dict = self.vae.state_dict()
                 model_path = str(self.results_folder / f'vae.{self.steps}.pt')
                 torch.save(state_dict, model_path)
 
-                print(f'saving model to {str(self.results_folder)}')
+                print(f'{self.steps}: saving model to {str(self.results_folder)}')
 
             self.steps += 1
 

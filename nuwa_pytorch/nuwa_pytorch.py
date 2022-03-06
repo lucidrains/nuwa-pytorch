@@ -256,6 +256,8 @@ class VQGanVAE(nn.Module):
         **kwargs
     ):
         super().__init__()
+        is_rgb = channels == 3
+
         vq_kwargs, kwargs = groupby_prefix_and_trim('vq_', kwargs)
 
         self.image_size = image_size
@@ -289,7 +291,7 @@ class VQGanVAE(nn.Module):
             self.encoders.append(VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
             self.decoders.insert(0, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
 
-        self.encoders.insert(0, nn.Conv2d(channels, dim, 3, padding = 1))
+        self.encoders.insert(0, nn.Conv2d(channels, dim, channels, padding = 1))
         self.decoders.append(nn.Conv2d(dim, channels, 1))
 
         self.vq = VQ(
@@ -306,6 +308,15 @@ class VQGanVAE(nn.Module):
 
         self.recon_loss_fn = F.mse_loss if l2_recon_loss else F.l1_loss
 
+        # turn off GAN and perceptual loss if grayscale
+
+        self.vgg = None
+        self.discr = None
+        self.is_rgb = is_rgb
+
+        if not is_rgb:
+            return
+
         # preceptual loss
 
         if exists(vgg):
@@ -316,7 +327,7 @@ class VQGanVAE(nn.Module):
 
         # gan related losses
 
-        self.discr = Discriminator(dim = dim, num_layers = num_layers)
+        self.discr = Discriminator(dim = dim, num_layers = num_layers, channels = channels)
 
         self.discr_loss = hinge_discr_loss if use_hinge_loss else bce_discr_loss
         self.gen_loss = hinge_gen_loss if use_hinge_loss else bce_gen_loss
@@ -366,6 +377,8 @@ class VQGanVAE(nn.Module):
         # whether to return discriminator loss
 
         if return_discr_loss:
+            assert exists(self.discr), 'discriminator must exist to train it'
+
             fmap.detach_()
             fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
             discr_loss = self.discr_loss(fmap_discr_logits, img_discr_logits)
@@ -375,6 +388,18 @@ class VQGanVAE(nn.Module):
 
             return discr_loss
 
+        # reconstruction loss
+
+        recon_loss = self.recon_loss_fn(fmap, img)
+
+        # early return if training on grayscale
+
+        if not self.is_rgb:
+            if return_recons:
+                return recon_loss, fmap
+
+            return recon_loss
+
         # perceptual loss
 
         img_vgg_feats = self.vgg(img)
@@ -383,7 +408,7 @@ class VQGanVAE(nn.Module):
 
         # generator loss
 
-        gen_loss = self.gen_loss(fmap)
+        gen_loss = self.gen_loss(self.discr(fmap))
 
         # calculate adaptive weight
 
@@ -394,10 +419,6 @@ class VQGanVAE(nn.Module):
 
         adaptive_weight = safe_div(norm_grad_wrt_perceptual_loss, norm_grad_wrt_gen_loss)
         adaptive_weight.clamp_(max = 1e4)
-
-        # reconstruction loss
-
-        recon_loss = self.recon_loss_fn(fmap, img)
 
         # combine losses
 
