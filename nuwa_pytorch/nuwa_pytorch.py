@@ -362,7 +362,8 @@ class VQGanVAE(nn.Module):
         return_discr_loss = False,
         return_recons = False
     ):
-        batch, channels, device = *img.shape[:2], img.device
+        batch, channels, height, width, device = *img.shape, img.device
+        assert height == self.image_size and width == self.image_size, 'height and width of input image must be equal to {self.image_size}'
         assert channels == self.channels, 'number of channels on image or sketch is not equal to the channels set on this VQGanVAE'
 
         fmap, indices, commit_loss = self.encode(img)
