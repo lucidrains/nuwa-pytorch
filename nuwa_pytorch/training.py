@@ -1,5 +1,6 @@
 from math import sqrt
 from pathlib import Path
+from shutil import rmtree
 
 import torch
 from torch import nn
@@ -20,6 +21,9 @@ from nuwa_pytorch.nuwa_pytorch import VQGanVAE
 def exists(val):
     return val is not None
 
+def noop(*args, **kwargs):
+    pass
+
 def cycle(dl):
     while True:
         for data in dl:
@@ -27,6 +31,16 @@ def cycle(dl):
 
 def cast_tuple(t):
     return t if isinstance(t, (tuple, list)) else (t,)
+
+def yes_or_no(question):
+    answer = input(f'{question} (y/n) ')
+    return answer.lower() in ('yes', 'y')
+
+def accum_log(log, new_logs):
+    for key, new_value in new_logs.items():
+        old_value = log.get(key, 0.)
+        log[key] = old_value + new_value
+    return log
 
 # adamw functions
 
@@ -168,77 +182,94 @@ class VQGanVAETrainer(nn.Module):
 
         self.save_model_every = save_model_every
         self.save_results_every = save_results_every
+
         self.results_folder = Path(results_folder)
+
+        if len([*self.results_folder.glob('**/*')]) > 0 and yes_or_no('do you want to clear previous experiment checkpoints and results?'):
+            rmtree(str(self.results_folder))
+
         self.results_folder.mkdir(parents = True, exist_ok = True)
 
-    def train(self):
+    def train_step(self):
         device = next(self.vae.parameters()).device
+        self.vae.train()
 
-        while self.steps < self.num_train_steps:
-            self.vae.train()
+        # logs
 
-            # update vae (generator)
+        logs = {}
 
-            gen_loss = 0
+        # update vae (generator)
+
+        for _ in range(self.grad_accum_every):
+            img = next(self.dl)
+            img = img.to(device)
+
+            loss = self.vae(img, return_loss = True)
+            accum_log(logs, {'loss': loss.item() / self.grad_accum_every})
+
+            (loss / self.grad_accum_every).backward()
+
+        self.optim.step()
+        self.optim.zero_grad()
+
+        # update discriminator
+
+        if exists(self.vae.discr):
+            discr_loss = 0
             for _ in range(self.grad_accum_every):
                 img = next(self.dl)
                 img = img.to(device)
 
-                loss = self.vae(img, return_loss = True)
-                gen_loss += loss.item()
+                loss = self.vae(img, return_discr_loss = True)
+                accum_log(logs, {'discr_loss': loss.item() / self.grad_accum_every})
 
                 (loss / self.grad_accum_every).backward()
 
             self.optim.step()
             self.optim.zero_grad()
 
-            # update discriminator
+            # log
 
-            if exists(self.vae.discr):
-                discr_loss = 0
-                for _ in range(self.grad_accum_every):
-                    img = next(self.dl)
-                    img = img.to(device)
+            gen_loss /= self.grad_accum_every
+            discr_loss /= self.grad_accum_every
 
-                    loss = self.vae(img, return_discr_loss = True)
-                    discr_loss += loss.item()
+            print(f"{self.steps}: vae loss: {logs['loss']} - discr loss: {logs['discr_loss']}")
 
-                    (loss / self.grad_accum_every).backward()
+        if not (self.steps % self.save_results_every):
+            self.vae.eval()
+            imgs = next(self.dl)
+            imgs = imgs.to(device)
 
-                self.optim.step()
-                self.optim.zero_grad()
+            recons = self.vae(imgs)
+            nrows = int(sqrt(self.batch_size))
 
-                # log
+            imgs_and_recons = torch.stack((imgs, recons), dim = 0)
+            imgs_and_recons = rearrange(imgs_and_recons, 'r b ... -> (b r) ...')
 
-                gen_loss /= self.grad_accum_every
-                discr_loss /= self.grad_accum_every
+            imgs_and_recons = imgs_and_recons.detach().cpu().float()
+            grid = make_grid(imgs_and_recons, nrow = 2, normalize = True, value_range = (-1, 1))
 
-                print(f'{self.steps}: vae loss: {gen_loss} - discr loss: {discr_loss}')
+            logs['reconstructions'] = grid
 
-            if not (self.steps % self.save_results_every):
-                self.vae.eval()
-                imgs = next(self.dl)
-                imgs = imgs.to(device)
+            save_image(grid, str(self.results_folder / f'{self.steps}.png'))
 
-                recons = self.vae(imgs)
-                nrows = int(sqrt(self.batch_size))
+            print(f'{self.steps}: saving to {str(self.results_folder)}')
 
-                imgs_and_recons = torch.stack((imgs, recons), dim = 0)
-                imgs_and_recons = rearrange(imgs_and_recons, 'r b ... -> (b r) ...')
+        if self.steps and not (self.steps % self.save_model_every):
+            state_dict = self.vae.state_dict()
+            model_path = str(self.results_folder / f'vae.{self.steps}.pt')
+            torch.save(state_dict, model_path)
 
-                imgs_and_recons = imgs_and_recons.detach().cpu().float()
-                grid = make_grid(imgs_and_recons, nrow = 2, normalize = True, value_range = (-1, 1))
+            print(f'{self.steps}: saving model to {str(self.results_folder)}')
 
-                save_image(grid, str(self.results_folder / f'{self.steps}.png'))
-                print(f'{self.steps}: saving to {str(self.results_folder)}')
+        self.steps += 1
+        return logs
 
-            if self.steps and not (self.steps % self.save_model_every):
-                state_dict = self.vae.state_dict()
-                model_path = str(self.results_folder / f'vae.{self.steps}.pt')
-                torch.save(state_dict, model_path)
+    def train(self, log_fn = noop):
+        device = next(self.vae.parameters()).device
 
-                print(f'{self.steps}: saving model to {str(self.results_folder)}')
-
-            self.steps += 1
+        while self.steps < self.num_train_steps:
+            logs = self.train_step()
+            log_fn(logs)
 
         print('training complete')
