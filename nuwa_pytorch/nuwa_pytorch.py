@@ -172,26 +172,17 @@ class Discriminator(nn.Module):
 
         return self.to_logits(x)
 
-class ConvNextBlock(nn.Module):
-    def __init__(
-        self,
-        dim,
-        act = nn.ReLU(),
-        ds_kernel_size = 7,
-        mult = 4,
-    ):
-        """
-        https://arxiv.org/abs/2201.03545
-        """
+class ResBlock(nn.Module):
+    def __init__(self, chan, groups = 32):
         super().__init__()
-        inner_dim = dim * mult
-
         self.net = nn.Sequential(
-            nn.Conv2d(dim, dim, ds_kernel_size, padding = ds_kernel_size // 2, groups = dim),
-            LayerNormChan(dim),
-            nn.Conv2d(dim, inner_dim, 3, padding = 1),
-            act,
-            nn.Conv2d(inner_dim, dim, 3, padding = 1)
+            nn.Conv2d(chan, chan, 3, padding = 1),
+            nn.GroupNorm(groups, chan),
+            nn.ReLU(),
+            nn.Conv2d(chan, chan, 3, padding = 1),
+            nn.GroupNorm(groups, chan),
+            nn.ReLU(),
+            nn.Conv2d(chan, chan, 1)
         )
 
     def forward(self, x):
@@ -244,7 +235,7 @@ class VQGanVAE(nn.Module):
         layer_mults = None,
         l2_recon_loss = False,
         use_hinge_loss = True,
-        num_conv_blocks = 1,
+        num_resnet_blocks = 1,
         vgg = None,
         vq_codebook_size = 512,
         vq_decay = 0.8,
@@ -254,9 +245,12 @@ class VQGanVAE(nn.Module):
         use_attn = True,
         attn_dim_head = 64,
         attn_heads = 8,
+        resnet_groups = 32,
         **kwargs
     ):
         super().__init__()
+        assert dim % resnet_groups == 0, f'dimension {dim} must be divisible by {resnet_groups} (groups for the groupnorm)'
+
         is_rgb = channels == 3
 
         vq_kwargs, kwargs = groupby_prefix_and_trim('vq_', kwargs)
@@ -284,9 +278,9 @@ class VQGanVAE(nn.Module):
             self.encoders.append(nn.Sequential(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
             self.decoders.append(nn.Sequential(nn.ConvTranspose2d(dec_dim_in, dec_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
 
-        for _ in range(num_conv_blocks):
-            self.encoders.append(ConvNextBlock(dims[-1]))
-            self.decoders.insert(0, ConvNextBlock(dims[-1]))
+        for _ in range(num_resnet_blocks):
+            self.encoders.append(ResBlock(dims[-1], groups = resnet_groups))
+            self.decoders.insert(0, ResBlock(dims[-1], groups = resnet_groups))
 
         if use_attn:
             self.encoders.append(VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))

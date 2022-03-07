@@ -29,7 +29,7 @@ vae = VQGanVAE(
     channels = 3,               # default is 3, but can be changed to any value for the training of the segmentation masks (sketches)
     image_size = 256,           # image size
     num_layers = 4,             # number of downsampling layers
-    num_conv_blocks = 2,        # number of convnext blocks
+    num_resnet_blocks = 2,      # number of resnet blocks
     vq_codebook_size = 8192,    # codebook size
     vq_decay = 0.8              # codebook exponential decay
 )
@@ -428,17 +428,6 @@ vae = VQGanVAE(
     eprint  = {2104.09864},
     archivePrefix = {arXiv},
     primaryClass = {cs.CL}
-}
-```
-
-```bibtex
-@misc{liu2022convnet,
-    title   = {A ConvNet for the 2020s},
-    author  = {Zhuang Liu and Hanzi Mao and Chao-Yuan Wu and Christoph Feichtenhofer and Trevor Darrell and Saining Xie},
-    year    = {2022},
-    eprint  = {2201.03545},
-    archivePrefix = {arXiv},
-    primaryClass = {cs.CV}
 }
 ```
 
