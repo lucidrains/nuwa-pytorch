@@ -2,6 +2,7 @@ import math
 from math import sqrt
 from functools import partial
 import torch
+from torch.autograd import grad as torch_grad
 from torch import nn, einsum
 from torch.autograd import grad
 from torch.optim import Adam
@@ -101,6 +102,9 @@ def prob_mask_like(shape, prob, device):
 def l2norm(t):
     return F.normalize(t, dim = -1)
 
+def leaky_relu(p = 0.1):
+    return nn.LeakyReLU(0.1)
+
 # gan losses
 
 def hinge_discr_loss(fake, real):
@@ -126,6 +130,15 @@ def grad_layer_wrt_loss(loss, layer):
 def batch_process(t, fn, chunks = 10, dim = 0):
     chunks = [fn(t_chunk) for t_chunk in t.chunk(chunks, dim = dim)]
     return torch.cat(chunks, dim = dim)
+
+def gradient_penalty(images, output, weight = 10):
+    batch_size = images.shape[0]
+    gradients = torch_grad(outputs = output, inputs = images,
+                           grad_outputs = torch.ones(output.size(), device = images.device),
+                           create_graph = True, retain_graph = True, only_inputs = True)[0]
+
+    gradients = rearrange(gradients, 'b ... -> b (...)')
+    return weight * ((gradients.norm(2, dim=1) - 1) ** 2).mean()
 
 # gradient control
 
@@ -161,19 +174,19 @@ class Discriminator(nn.Module):
         super().__init__()
         dim_pairs = zip(dims[:-1], dims[1:])
 
-        self.layers = MList([nn.Sequential(nn.Conv2d(channels, dims[0], init_kernel_size, padding = init_kernel_size // 2), nn.ReLU())])
+        self.layers = MList([nn.Sequential(nn.Conv2d(channels, dims[0], init_kernel_size, padding = init_kernel_size // 2), leaky_relu())])
 
         for dim_in, dim_out in dim_pairs:
             self.layers.append(nn.Sequential(
                 nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1),
                 nn.GroupNorm(groups, dim_out),
-                nn.ReLU()
+                leaky_relu()
             ))
 
         dim = dims[-1]
         self.to_logits = nn.Sequential( # return 5 x 5, for PatchGAN-esque training
             nn.Conv2d(dim, dim, 1),
-            nn.ReLU(),
+            leaky_relu(),
             nn.Conv2d(dim, 1, 4)
         )
 
@@ -189,10 +202,10 @@ class ContinuousPositionBias(nn.Module):
     def __init__(self, *, dim, heads, layers = 2):
         super().__init__()
         self.net = MList([])
-        self.net.append(nn.Sequential(nn.Linear(2, dim), nn.ReLU()))
+        self.net.append(nn.Sequential(nn.Linear(2, dim), leaky_relu()))
 
         for _ in range(layers - 1):
-            self.net.append(nn.Sequential(nn.Linear(dim, dim), nn.ReLU()))
+            self.net.append(nn.Sequential(nn.Linear(dim, dim), leaky_relu()))
 
         self.net.append(nn.Linear(dim, heads))
         self.register_buffer('rel_pos', None, persistent = False)
@@ -217,16 +230,32 @@ class ContinuousPositionBias(nn.Module):
         bias = rearrange(rel_pos, 'i j h -> h i j')
         return x + bias
 
+class GLUResBlock(nn.Module):
+    def __init__(self, chan, groups = 16):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(chan, chan * 2, 3, padding = 1),
+            nn.GLU(dim = 1),
+            nn.GroupNorm(groups, chan),
+            nn.Conv2d(chan, chan * 2, 3, padding = 1),
+            nn.GLU(dim = 1),
+            nn.GroupNorm(groups, chan),
+            nn.Conv2d(chan, chan, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x) + x
+
 class ResBlock(nn.Module):
     def __init__(self, chan, groups = 16):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(chan, chan, 3, padding = 1),
             nn.GroupNorm(groups, chan),
-            nn.ReLU(),
+            leaky_relu(),
             nn.Conv2d(chan, chan, 3, padding = 1),
             nn.GroupNorm(groups, chan),
-            nn.ReLU(),
+            leaky_relu(),
             nn.Conv2d(chan, chan, 1)
         )
 
@@ -339,15 +368,15 @@ class VQGanVAE(nn.Module):
         assert len(use_attn) == num_layers
 
         for layer_index, (dim_in, dim_out), layer_num_resnet_blocks, layer_use_attn in zip(range(num_layers), dim_pairs, num_resnet_blocks, use_attn):
-            append(self.encoders, nn.Sequential(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
-            prepend(self.decoders, nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dim_out, dim_in, 3, padding = 1), nn.ReLU()))
+            append(self.encoders, nn.Sequential(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1), leaky_relu()))
+            prepend(self.decoders, nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dim_out, dim_in, 3, padding = 1), leaky_relu()))
 
             if layer_use_attn:
                 prepend(self.decoders, VQGanAttention(dim = dim_out, heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
 
             for _ in range(layer_num_resnet_blocks):
                 append(self.encoders, ResBlock(dim_out, groups = resnet_groups))
-                prepend(self.decoders, ResBlock(dim_out, groups = resnet_groups))
+                prepend(self.decoders, GLUResBlock(dim_out, groups = resnet_groups))
 
             if layer_use_attn:
                 append(self.encoders, VQGanAttention(dim = dim_out, heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
@@ -443,13 +472,20 @@ class VQGanVAE(nn.Module):
             assert exists(self.discr), 'discriminator must exist to train it'
 
             fmap.detach_()
+            img.requires_grad_()
+
             fmap_discr_logits, img_discr_logits = map(self.discr, (fmap, img))
+
+            gp = gradient_penalty(img, img_discr_logits)
+
             discr_loss = self.discr_loss(fmap_discr_logits, img_discr_logits)
 
-            if return_recons:
-                return discr_loss, fmap
+            loss = discr_loss + gp
 
-            return discr_loss
+            if return_recons:
+                return loss, fmap
+
+            return loss
 
         # reconstruction loss
 

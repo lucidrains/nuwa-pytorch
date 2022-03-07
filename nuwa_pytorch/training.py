@@ -60,7 +60,7 @@ def get_optimizer(
         params = list(filter(lambda t: t.requires_grad, params))
 
     if wd == 0:
-        return Adam(params, lr = lr)
+        return Adam(list(params), lr = lr)
 
     params = set(params)
     wd_params, no_wd_params = separate_weight_decayable_params(params)
@@ -168,7 +168,12 @@ class VQGanVAETrainer(nn.Module):
         self.batch_size = batch_size
         self.grad_accum_every = grad_accum_every
 
-        self.optim = get_optimizer(vae.parameters(), lr = lr, wd = wd)
+        all_parameters = set(vae.parameters())
+        discr_parameters = set(vae.discr.parameters())
+        vae_parameters = all_parameters - discr_parameters
+
+        self.optim = get_optimizer(vae_parameters, lr = lr, wd = wd)
+        self.discr_optim = get_optimizer(discr_parameters, lr = lr, wd = wd)
 
         # create dataset
 
@@ -235,8 +240,8 @@ class VQGanVAETrainer(nn.Module):
 
                 (loss / self.grad_accum_every).backward()
 
-            self.optim.step()
-            self.optim.zero_grad()
+            self.discr_optim.step()
+            self.discr_optim.zero_grad()
 
             # log
 
