@@ -276,7 +276,7 @@ class VQGanVAE(nn.Module):
 
         for _, (enc_dim_in, enc_dim_out), (dec_dim_in, dec_dim_out) in zip(range(num_layers), enc_dim_pairs, dec_dim_pairs):
             self.encoders.append(nn.Sequential(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
-            self.decoders.append(nn.Sequential(nn.ConvTranspose2d(dec_dim_in, dec_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
+            self.decoders.append(nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dec_dim_in, dec_dim_out, 3, padding = 1), nn.ReLU()))
 
         for _ in range(num_resnet_blocks):
             self.encoders.append(ResBlock(dims[-1], groups = resnet_groups))
