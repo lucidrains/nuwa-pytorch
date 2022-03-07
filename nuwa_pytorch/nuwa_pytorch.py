@@ -1,3 +1,4 @@
+from math import sqrt
 from functools import partial
 import torch
 from torch import nn, einsum
@@ -172,6 +173,40 @@ class Discriminator(nn.Module):
 
         return self.to_logits(x)
 
+class ContinuousPositionBias(nn.Module):
+    """ from https://arxiv.org/abs/2111.09883 """
+
+    def __init__(self, *, dim, heads, layers = 2):
+        super().__init__()
+        self.net = MList([])
+        self.net.append(nn.Sequential(nn.Linear(2, dim), nn.ReLU()))
+
+        for _ in range(layers - 1):
+            self.net.append(nn.Sequential(nn.Linear(dim, dim), nn.ReLU()))
+
+        self.net.append(nn.Linear(dim, heads))
+        self.register_buffer('rel_pos', None, persistent = False)
+
+    def forward(self, x):
+        n, device = x.shape[-1], x.device
+        fmap_size = int(sqrt(n))
+
+        if not exists(self.rel_pos):
+            pos = torch.arange(fmap_size, device = device)
+            grid = torch.stack(torch.meshgrid(pos, pos, indexing = 'ij'))
+            grid = rearrange(grid, 'c i j -> (i j) c')
+            rel_pos = rearrange(grid, 'i c -> i 1 c') - rearrange(grid, 'j c -> 1 j c')
+            rel_pos = torch.sign(rel_pos) * torch.log(rel_pos.abs() + 1)
+            self.register_buffer('rel_pos', rel_pos, persistent = False)
+
+        rel_pos = self.rel_pos.float()
+
+        for layer in self.net:
+            rel_pos = layer(rel_pos)
+
+        bias = rearrange(rel_pos, 'i j h -> h i j')
+        return x + bias
+
 class ResBlock(nn.Module):
     def __init__(self, chan, groups = 32):
         super().__init__()
@@ -194,16 +229,19 @@ class VQGanAttention(nn.Module):
         *,
         dim,
         dim_head = 64,
-        heads = 8
+        heads = 8,
+        dropout = 0.
     ):
         super().__init__()
         self.heads = heads
         self.scale = dim_head ** -0.5
         inner_dim = heads * dim_head
 
+        self.dropout = nn.Dropout(dropout)
         self.pre_norm = LayerNormChan(dim)
         self.post_norm = LayerNormChan(dim)
 
+        self.cpb = ContinuousPositionBias(dim = dim // 4, heads = heads)
         self.to_qkv = nn.Conv2d(dim, inner_dim * 3, 1, bias = False)
         self.to_out = nn.Conv2d(inner_dim, dim, 1)
 
@@ -220,7 +258,10 @@ class VQGanAttention(nn.Module):
         q = q * self.scale
         sim = einsum('b h c i, b h c j -> b h i j', q, k)
 
+        sim = self.cpb(sim)
+
         attn = stable_softmax(sim, dim = -1)
+        attn = self.dropout(attn)
 
         out = einsum('b h i j, b h c j -> b h c i', attn, v)
         out = rearrange(out, 'b h c (x y) -> b (h c) x y', x = height, y = width)
@@ -250,6 +291,7 @@ class VQGanVAE(nn.Module):
         attn_dim_head = 64,
         attn_heads = 8,
         resnet_groups = 32,
+        attn_dropout = 0.,
         **kwargs
     ):
         super().__init__()
@@ -292,13 +334,15 @@ class VQGanVAE(nn.Module):
             append(self.encoders, nn.Sequential(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
             prepend(self.decoders, nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dim_out, dim_in, 3, padding = 1), nn.ReLU()))
 
+            if layer_use_attn:
+                prepend(self.decoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
+
             for _ in range(layer_num_resnet_blocks):
                 append(self.encoders, ResBlock(dim_out, groups = resnet_groups))
                 prepend(self.decoders, ResBlock(dim_out, groups = resnet_groups))
 
             if layer_use_attn:
-                append(self.encoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
-                prepend(self.decoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
+                append(self.encoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
 
         prepend(self.encoders, nn.Conv2d(channels, dim, 3, padding = 1))
         append(self.decoders, nn.Conv2d(dim, channels, 1))

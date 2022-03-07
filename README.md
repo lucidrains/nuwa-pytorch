@@ -442,6 +442,17 @@ vae = VQGanVAE(
 ```
 
 ```bibtex
+@misc{liu2021swin,
+    title   = {Swin Transformer V2: Scaling Up Capacity and Resolution},
+    author  = {Ze Liu and Han Hu and Yutong Lin and Zhuliang Yao and Zhenda Xie and Yixuan Wei and Jia Ning and Yue Cao and Zheng Zhang and Li Dong and Furu Wei and Baining Guo},
+    year    = {2021},
+    eprint  = {2111.09883},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
+
+```bibtex
 @misc{crowson2022,
     author  = {Katherine Crowson},
     url     = {https://twitter.com/RiversHaveWings/status/1478093658716966912}
