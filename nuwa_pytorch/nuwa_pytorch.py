@@ -163,7 +163,7 @@ class Discriminator(nn.Module):
 
         self.layers = MList([])
         for _, (dim_in, dim_out) in zip(range(num_layers), dim_pairs):
-            self.layers.append(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1))
+            self.layers.append(nn.Sequential(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
 
         self.to_logits = nn.Sequential( # return 5 x 5, for PatchGAN-esque training
             nn.Conv2d(dim, dim, 1),
