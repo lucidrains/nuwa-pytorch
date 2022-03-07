@@ -1,4 +1,5 @@
 from math import sqrt
+from random import choice
 from pathlib import Path
 from shutil import rmtree
 
@@ -75,17 +76,18 @@ class MemmappedImageDataset(Dataset):
         self,
         *,
         path,
-        shape
+        shape,
+        random_rotate = True
     ):
         super().__init__()
         path = Path(path)
         assert path.exists(), f'path {path} must exist'
         self.memmap = np.memmap(str(path), mode = 'r', dtype = np.uint8, shape = shape)
+        self.random_rotate = random_rotate
 
         image_size = shape[-1]
         self.transform = T.Compose([
             T.Resize(image_size),
-            T.RandomHorizontalFlip(),
             T.CenterCrop(image_size),
             T.ToTensor()
         ])
@@ -100,7 +102,11 @@ class MemmappedImageDataset(Dataset):
             arr = rearrange(arr, '1 ... -> ...')
 
         img = Image.fromarray(arr)
-        return self.transform(img)
+        img = self.transform(img)
+
+        if self.random_rotate:
+            img = T.functional.rotate(img, choice([0, 90, 180, 270]))
+        return img
 
 class ImageDataset(Dataset):
     def __init__(

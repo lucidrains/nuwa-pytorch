@@ -201,7 +201,9 @@ class VQGanAttention(nn.Module):
         self.scale = dim_head ** -0.5
         inner_dim = heads * dim_head
 
-        self.norm = LayerNormChan(dim)
+        self.pre_norm = LayerNormChan(dim)
+        self.post_norm = LayerNormChan(dim)
+
         self.to_qkv = nn.Conv2d(dim, inner_dim * 3, 1, bias = False)
         self.to_out = nn.Conv2d(inner_dim, dim, 1)
 
@@ -209,12 +211,14 @@ class VQGanAttention(nn.Module):
         h = self.heads
         height, width, residual = *x.shape[-2:], x.clone()
 
-        x = self.norm(x)
+        x = self.pre_norm(x)
 
         q, k, v = self.to_qkv(x).chunk(3, dim = 1)
 
         q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h c (x y)', h = h), (q, k, v))
-        sim = einsum('b h c i, b h c j -> b h i j', q, k) * self.scale
+
+        q = q * self.scale
+        sim = einsum('b h c i, b h c j -> b h i j', q, k)
 
         attn = stable_softmax(sim, dim = -1)
 
@@ -222,7 +226,7 @@ class VQGanAttention(nn.Module):
         out = rearrange(out, 'b h c (x y) -> b (h c) x y', x = height, y = width)
         out = self.to_out(out)
 
-        return out + residual
+        return self.post_norm(out) + residual
 
 class VQGanVAE(nn.Module):
     def __init__(
@@ -270,24 +274,34 @@ class VQGanVAE(nn.Module):
         dims = (dim, *layer_dims)
         codebook_dim = layer_dims[-1]
 
-        reversed_dims = tuple(reversed(dims))
-        enc_dim_pairs = zip(dims[:-1], dims[1:])
-        dec_dim_pairs = zip(reversed_dims[:-1], reversed_dims[1:])
+        dim_pairs = zip(dims[:-1], dims[1:])
 
-        for _, (enc_dim_in, enc_dim_out), (dec_dim_in, dec_dim_out) in zip(range(num_layers), enc_dim_pairs, dec_dim_pairs):
-            self.encoders.append(nn.Sequential(nn.Conv2d(enc_dim_in, enc_dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
-            self.decoders.append(nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dec_dim_in, dec_dim_out, 3, padding = 1), nn.ReLU()))
+        append = lambda arr, t: arr.append(t)
+        prepend = lambda arr, t: arr.insert(0, t)
 
-        for _ in range(num_resnet_blocks):
-            self.encoders.append(ResBlock(dims[-1], groups = resnet_groups))
-            self.decoders.insert(0, ResBlock(dims[-1], groups = resnet_groups))
+        if not isinstance(num_resnet_blocks, tuple):
+            num_resnet_blocks = (*((0,) * (num_layers - 1)), num_resnet_blocks)
 
-        if use_attn:
-            self.encoders.append(VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
-            self.decoders.insert(0, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
+        if not isinstance(use_attn, tuple):
+            use_attn = (*((False,) * (num_layers - 1)), use_attn)
 
-        self.encoders.insert(0, nn.Conv2d(channels, dim, channels, padding = 1))
-        self.decoders.append(nn.Conv2d(dim, channels, 1))
+        assert len(num_resnet_blocks) == num_layers, 'number of resnet blocks config must be equal to number of layers'
+        assert len(use_attn) == num_layers
+
+        for layer_index, (dim_in, dim_out), layer_num_resnet_blocks, layer_use_attn in zip(range(num_layers), dim_pairs, num_resnet_blocks, use_attn):
+            append(self.encoders, nn.Sequential(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
+            prepend(self.decoders, nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dim_out, dim_in, 3, padding = 1), nn.ReLU()))
+
+            for _ in range(layer_num_resnet_blocks):
+                append(self.encoders, ResBlock(dim_out, groups = resnet_groups))
+                prepend(self.decoders, ResBlock(dim_out, groups = resnet_groups))
+
+            if layer_use_attn:
+                append(self.encoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
+                prepend(self.decoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head))
+
+        prepend(self.encoders, nn.Conv2d(channels, dim, 3, padding = 1))
+        append(self.decoders, nn.Conv2d(dim, channels, 1))
 
         self.vq = VQ(
             dim = codebook_dim,
