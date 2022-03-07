@@ -273,8 +273,8 @@ vae = VQGanVAE(
     vq_codebook_size = 1024,
     vq_use_cosine_sim = True,
     vq_codebook_dim = 32,
-    orthogonal_reg_weight = 10,
-    orthogonal_reg_max_codes = 128,
+    vq_orthogonal_reg_weight = 10,
+    vq_orthogonal_reg_max_codes = 128,
 ).cuda()
 
 trainer = VQGanVAETrainer(
