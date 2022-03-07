@@ -1,3 +1,4 @@
+import math
 from math import sqrt
 from functools import partial
 import torch
@@ -96,6 +97,9 @@ def stable_softmax(t, dim = -1, alpha = 32 ** 2):
 
 def prob_mask_like(shape, prob, device):
     return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+
+def l2norm(t):
+    return F.normalize(t, dim = -1)
 
 # gan losses
 
@@ -234,11 +238,10 @@ class VQGanAttention(nn.Module):
     ):
         super().__init__()
         self.heads = heads
-        self.scale = dim_head ** -0.5
+        self.scale = nn.Parameter(torch.ones(1, heads, 1, 1) * math.log(0.01))
         inner_dim = heads * dim_head
 
         self.dropout = nn.Dropout(dropout)
-        self.pre_norm = LayerNormChan(dim)
         self.post_norm = LayerNormChan(dim)
 
         self.cpb = ContinuousPositionBias(dim = dim // 4, heads = heads)
@@ -249,14 +252,13 @@ class VQGanAttention(nn.Module):
         h = self.heads
         height, width, residual = *x.shape[-2:], x.clone()
 
-        x = self.pre_norm(x)
-
         q, k, v = self.to_qkv(x).chunk(3, dim = 1)
 
         q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h c (x y)', h = h), (q, k, v))
 
-        q = q * self.scale
-        sim = einsum('b h c i, b h c j -> b h i j', q, k)
+        q, k = map(l2norm, (q, k))
+
+        sim = einsum('b h c i, b h c j -> b h i j', q, k) * self.scale.exp()
 
         sim = self.cpb(sim)
 
