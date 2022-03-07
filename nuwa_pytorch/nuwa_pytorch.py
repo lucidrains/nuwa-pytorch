@@ -294,12 +294,12 @@ class VQGanVAE(nn.Module):
         attn_heads = 8,
         resnet_groups = 32,
         attn_dropout = 0.,
+        first_conv_kernel_size = 5,
+        use_vgg_and_gan = True,
         **kwargs
     ):
         super().__init__()
         assert dim % resnet_groups == 0, f'dimension {dim} must be divisible by {resnet_groups} (groups for the groupnorm)'
-
-        is_rgb = channels == 3
 
         vq_kwargs, kwargs = groupby_prefix_and_trim('vq_', kwargs)
 
@@ -346,7 +346,7 @@ class VQGanVAE(nn.Module):
             if layer_use_attn:
                 append(self.encoders, VQGanAttention(dim = dim_out, heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
 
-        prepend(self.encoders, nn.Conv2d(channels, dim, 3, padding = 1))
+        prepend(self.encoders, nn.Conv2d(channels, dim, first_conv_kernel_size, padding = first_conv_kernel_size // 2))
         append(self.decoders, nn.Conv2d(dim, channels, 1))
 
         self.vq = VQ(
@@ -368,9 +368,9 @@ class VQGanVAE(nn.Module):
 
         self.vgg = None
         self.discr = None
-        self.is_rgb = is_rgb
+        self.use_vgg_and_gan = use_vgg_and_gan
 
-        if not is_rgb:
+        if not use_vgg_and_gan:
             return
 
         # preceptual loss
@@ -451,7 +451,7 @@ class VQGanVAE(nn.Module):
 
         # early return if training on grayscale
 
-        if not self.is_rgb:
+        if not self.use_vgg_and_gan:
             if return_recons:
                 return recon_loss, fmap
 
@@ -459,8 +459,15 @@ class VQGanVAE(nn.Module):
 
         # perceptual loss
 
-        img_vgg_feats = self.vgg(img)
-        recon_vgg_feats = self.vgg(fmap)
+        img_vgg_input = img
+        fmap_vgg_input = fmap
+
+        if img.shape[1] == 1:
+            # handle grayscale for vgg
+            img_vgg_input, fmap_vgg_input = map(lambda t: repeat(t, 'b 1 ... -> b c ...', c = 3), (img_vgg_input, fmap_vgg_input))
+
+        img_vgg_feats = self.vgg(img_vgg_input)
+        recon_vgg_feats = self.vgg(fmap_vgg_input)
         perceptual_loss = F.mse_loss(img_vgg_feats, recon_vgg_feats)
 
         # generator loss
