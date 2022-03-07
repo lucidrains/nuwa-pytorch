@@ -153,18 +153,24 @@ class LayerNormChan(nn.Module):
 class Discriminator(nn.Module):
     def __init__(
         self,
-        dim,
-        num_layers,
-        channels = 3
+        dims,
+        channels = 3,
+        groups = 16,
+        init_kernel_size = 5
     ):
         super().__init__()
-        dims = (channels, *((dim,) * num_layers))
         dim_pairs = zip(dims[:-1], dims[1:])
 
-        self.layers = MList([])
-        for _, (dim_in, dim_out) in zip(range(num_layers), dim_pairs):
-            self.layers.append(nn.Sequential(nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1), nn.ReLU()))
+        self.layers = MList([nn.Sequential(nn.Conv2d(channels, dims[0], init_kernel_size, padding = init_kernel_size // 2), nn.ReLU())])
 
+        for dim_in, dim_out in dim_pairs:
+            self.layers.append(nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, 4, stride = 2, padding = 1),
+                nn.GroupNorm(groups, dim_out),
+                nn.ReLU()
+            ))
+
+        dim = dims[-1]
         self.to_logits = nn.Sequential( # return 5 x 5, for PatchGAN-esque training
             nn.Conv2d(dim, dim, 1),
             nn.ReLU(),
@@ -212,7 +218,7 @@ class ContinuousPositionBias(nn.Module):
         return x + bias
 
 class ResBlock(nn.Module):
-    def __init__(self, chan, groups = 32):
+    def __init__(self, chan, groups = 16):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(chan, chan, 3, padding = 1),
@@ -292,7 +298,7 @@ class VQGanVAE(nn.Module):
         use_attn = True,
         attn_dim_head = 64,
         attn_heads = 8,
-        resnet_groups = 32,
+        resnet_groups = 16,
         attn_dropout = 0.,
         first_conv_kernel_size = 5,
         use_vgg_and_gan = True,
@@ -383,7 +389,7 @@ class VQGanVAE(nn.Module):
 
         # gan related losses
 
-        self.discr = Discriminator(dim = dim, num_layers = num_layers, channels = channels)
+        self.discr = Discriminator(dims = dims, channels = channels)
 
         self.discr_loss = hinge_discr_loss if use_hinge_loss else bce_discr_loss
         self.gen_loss = hinge_gen_loss if use_hinge_loss else bce_gen_loss
