@@ -337,14 +337,14 @@ class VQGanVAE(nn.Module):
             prepend(self.decoders, nn.Sequential(nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False), nn.Conv2d(dim_out, dim_in, 3, padding = 1), nn.ReLU()))
 
             if layer_use_attn:
-                prepend(self.decoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
+                prepend(self.decoders, VQGanAttention(dim = dim_out, heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
 
             for _ in range(layer_num_resnet_blocks):
                 append(self.encoders, ResBlock(dim_out, groups = resnet_groups))
                 prepend(self.decoders, ResBlock(dim_out, groups = resnet_groups))
 
             if layer_use_attn:
-                append(self.encoders, VQGanAttention(dim = dims[-1], heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
+                append(self.encoders, VQGanAttention(dim = dim_out, heads = attn_heads, dim_head = attn_dim_head, dropout = attn_dropout))
 
         prepend(self.encoders, nn.Conv2d(channels, dim, 3, padding = 1))
         append(self.decoders, nn.Conv2d(dim, channels, 1))
