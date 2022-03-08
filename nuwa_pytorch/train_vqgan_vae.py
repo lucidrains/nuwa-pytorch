@@ -14,7 +14,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision.utils import make_grid, save_image
 
 from einops import rearrange
-from nuwa_pytorch.nuwa_pytorch import VQGanVAE
+from nuwa_pytorch.vqgan_vae import VQGanVAE
 from nuwa_pytorch.optimizer import get_optimizer
 
 # helpers
