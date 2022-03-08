@@ -4,7 +4,7 @@ setup(
   name = 'nuwa-pytorch',
   packages = find_packages(exclude=[]),
   include_package_data = True,
-  version = '0.4.26',
+  version = '0.4.27',
   license='MIT',
   description = 'NÜWA - Pytorch',
   author = 'Phil Wang',
@@ -22,6 +22,7 @@ setup(
     'regex',
     'torch>=1.6',
     'torchvision',
+    'tqdm',
     'unfoldNd',
     'vector-quantize-pytorch>=0.4.10'
   ],

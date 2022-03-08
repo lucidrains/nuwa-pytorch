@@ -19,6 +19,8 @@ from nuwa_pytorch.reversible_video_audio import DualModalityReversibleSequence
 
 from unfoldNd import unfoldNd
 
+from tqdm import tqdm
+
 # constants
 
 MList = nn.ModuleList
@@ -2072,7 +2074,7 @@ class NUWA(nn.Module):
 
         pos_emb = self.video_pos_emb()
 
-        for ind in range(total_video_tokens):
+        for ind in tqdm(range(total_video_tokens)):
             video_indices_input = video_indices
 
             num_video_tokens = video_indices.shape[1]
@@ -2653,7 +2655,7 @@ class NUWASketch(nn.Module):
 
         pos_emb = self.video_pos_emb()
 
-        for ind in range(total_video_tokens):
+        for ind in tqdm(range(total_video_tokens)):
             video_indices_input = video_indices
 
             num_video_tokens = video_indices.shape[1]
