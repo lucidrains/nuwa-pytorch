@@ -1931,9 +1931,9 @@ class NUWA(nn.Module):
     def __init__(
         self,
         *,
-        vae,
         dim,
-        image_size,
+        vae = None,
+        image_size = None,
         max_video_frames = 5,
         text_num_tokens,
         text_max_seq_len = 256,
@@ -1956,7 +1956,13 @@ class NUWA(nn.Module):
         sparse_3dna_dilation = 1,
     ):
         super().__init__()
-        self.vae = vae
+        assert exists(vae) ^ exists(image_size), 'either VAE or image size must be specified'
+
+        self.vae = None
+        if exists(vae):
+            self.vae = vae
+            image_size = vae.image_size
+
         vae_num_layers = vae.num_layers
         num_image_tokens = vae.codebook_size
 
@@ -2128,7 +2134,12 @@ class NUWA(nn.Module):
 
         assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
 
-        frame_indices = self.vae.get_video_indices(video)
+        if video.dtype == torch.long:
+            frame_indices = video
+        else:
+            assert exists(self.vae), 'VAE must be passed in if you wish for video to be encoded to ids automatically'
+            frame_indices = self.vae.get_video_indices(video)
+
         frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
         frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
 
