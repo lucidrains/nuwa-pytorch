@@ -72,6 +72,9 @@ def stable_softmax(t, dim = -1, alpha = 32 ** 2):
     t = t - torch.amax(t, dim = dim, keepdim = True).detach()
     return (t * alpha).softmax(dim = dim)
 
+def safe_div(numer, denom, eps = 1e-6):
+    return numer / (denom + eps)
+
 # gan losses
 
 def hinge_discr_loss(fake, real):
@@ -87,7 +90,7 @@ def bce_gen_loss(fake):
     return -log(sigmoid(fake)).mean()
 
 def grad_layer_wrt_loss(loss, layer):
-    return grad(
+    return torch_grad(
         outputs = loss,
         inputs = layer,
         grad_outputs = torch.ones_like(loss),
