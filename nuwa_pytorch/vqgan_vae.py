@@ -1,3 +1,4 @@
+import copy
 import math
 from functools import partial
 from math import sqrt
@@ -370,6 +371,16 @@ class VQGanVAE(nn.Module):
 
         self.discr_loss = hinge_discr_loss if use_hinge_loss else bce_discr_loss
         self.gen_loss = hinge_gen_loss if use_hinge_loss else bce_gen_loss
+
+    def copy_for_eval(self):
+        device = next(self.parameters()).device
+        vae_copy = copy.deepcopy(self.cpu())
+
+        if vae_copy.use_vgg_and_gan:
+            del vae_copy.discr
+            del vae_copy.vgg
+
+        return vae_copy.to(device)
 
     @property
     def codebook(self):

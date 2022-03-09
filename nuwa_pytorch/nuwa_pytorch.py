@@ -1503,7 +1503,7 @@ class NUWA(nn.Module):
 
         self.vae = None
         if exists(vae):
-            self.vae = vae
+            self.vae = vae.copy_for_eval()
             image_size = vae.image_size
 
         vae_num_layers = vae.num_layers
@@ -1747,7 +1747,7 @@ class NUWAVideoAudio(nn.Module):
         cross_modality_attn_every = 3
     ):
         super().__init__()
-        self.vae = vae
+        self.vae = vae.copy_for_eval()
         vae_num_layers = vae.num_layers
         num_image_tokens = vae.codebook_size
 
@@ -2095,7 +2095,7 @@ class NUWASketch(nn.Module):
 
         # decoder parameters
 
-        self.vae = vae
+        self.vae = vae.copy_for_eval()
 
         vae_num_layers = vae.num_layers
         num_image_tokens = vae.codebook_size
