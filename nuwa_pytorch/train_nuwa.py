@@ -13,6 +13,7 @@ from nuwa_pytorch.tokenizer import tokenizer
 from nuwa_pytorch.optimizer import get_optimizer
 from nuwa_pytorch import NUWA
 
+import torchvision.transforms as T
 from torchvision.utils import make_grid, save_image
 
 # helper functions
@@ -53,11 +54,13 @@ class MnistDataset(Dataset):
         num_frames = 10,
         image_size = 64,
         channels = 1,
+        random_rotate = False
     ):
         super().__init__()
         self.num_videos = num_videos
         self.videos_memmap = np.memmap(videos_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_frames, channels, image_size, image_size))
         self.labels_memmap = np.memmap(labels_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_digits))
+        self.random_rotate = random_rotate
 
     def __len__(self):
         return self.num_videos
@@ -71,6 +74,9 @@ class MnistDataset(Dataset):
 
         text = tokenizer.encode(' '.join(map(str, label.tolist())))
         text = torch.Tensor(text).long()
+
+        if self.random_rotate:
+            video = T.functional.rotate(video, choice([0, 90, 180, 270]))
 
         return text, video
 
