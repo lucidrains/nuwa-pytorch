@@ -149,6 +149,34 @@ def apply_rotary_pos_emb(freqs, t):
 
 # helper classes
 
+class ShiftAudioTokens(nn.Module):
+    def __init__(
+        self,
+        fn,
+        audio_tokens_per_timestep = 1
+    ):
+        super().__init__()
+        self.fn = fn
+        self.audio_tokens_per_timestep = audio_tokens_per_timestep
+
+    def forward(self, x, **kwargs):
+        n = x.shape[1]
+
+        # pad to nearest time step
+
+        padding = self.audio_tokens_per_timestep - (n % self.audio_tokens_per_timestep)
+        x = F.pad(x, (0, 0, 0, padding), value = 0.)
+
+        # shift along time
+
+        x_shift, x = x.chunk(2, dim = -1)
+        x_shift = F.pad(x_shift, (0, 0, 1, -1), value = 0.)
+        x = torch.cat((x_shift, x), dim = -1)
+
+        # remove padding if needed
+
+        return self.fn(x[:, :n], **kwargs)
+
 class ShiftVideoTokens(nn.Module):
     def __init__(
         self,
@@ -1107,48 +1135,38 @@ class DualModalityDecoder(nn.Module):
         depth,
         num_audio_tokens_per_video_frame,
         num_video_tokens_per_frame,
+        sparse_3dna_video_shape,
         heads = 8,
         dim_head = 64,
         ff_mult = 4,
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
-        sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
-        sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
         shift_video_tokens = False,
+        shift_audio_tokens = False,
+        audio_tokens_per_timestep = 1,
         cross_modality_attn_every = 3
     ):
         super().__init__()
-        assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
-
         self.layers = MList([])
         self.layer_types = []
 
-        def intra_modality_attn(sparse_3dna_attn):
-            if sparse_3dna_attn:
-                dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+        def intra_modality_attn(is_video):
+            dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
 
-                self_attn = Sparse3DNA(
-                    dim = dim,
-                    heads = heads,
-                    dim_head = dim_head,
-                    causal = True,
-                    kernel_size = sparse_3dna_kernel_size,
-                    dilation = dilation,
-                    video_shape = sparse_3dna_video_shape,
-                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
-                )
-            else:
-                self_attn = Attention(
-                    dim = dim,
-                    heads = heads,
-                    dim_head = dim_head,
-                    causal = True,
-                    dropout = attn_dropout
-                )
+            self_attn = Sparse3DNA(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                causal = True,
+                kernel_size = sparse_3dna_kernel_size,
+                dilation = dilation,
+                video_shape = sparse_3dna_video_shape,
+                query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+            )
 
             cross_attn = Attention(
                 dim = dim,
@@ -1159,10 +1177,14 @@ class DualModalityDecoder(nn.Module):
 
             ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
 
-            if sparse_3dna_attn and shift_video_tokens:
+            if is_video and shift_video_tokens:
                 fmap_size = sparse_3dna_video_shape[-1]
                 self_attn = ShiftVideoTokens(self_attn, image_size = fmap_size)
                 ff        = ShiftVideoTokens(ff, image_size = fmap_size)
+
+            if not is_video and shift_audio_tokens:
+                self_attn = ShiftAudioTokens(self_attn, audio_tokens_per_timestep = audio_tokens_per_timestep)
+                ff        = ShiftAudioTokens(ff, audio_tokens_per_timestep = audio_tokens_per_timestep)
 
             return MList([
                 SandwichNorm(dim = dim, fn = self_attn),
@@ -1189,8 +1211,8 @@ class DualModalityDecoder(nn.Module):
             ])
 
         for ind in range(depth):
-            video_modality_attn = intra_modality_attn(sparse_3dna_attn = sparse_3dna_attn)
-            audio_modality_attn = intra_modality_attn(sparse_3dna_attn = False)
+            video_modality_attn = intra_modality_attn(True)
+            audio_modality_attn = intra_modality_attn(False)
 
             self.layer_types.append('intra_modality')
 
@@ -1270,23 +1292,22 @@ class ReversibleDualModalityDecoder(nn.Module):
         depth,
         num_audio_tokens_per_video_frame,
         num_video_tokens_per_frame,
+        sparse_3dna_video_shape,
         heads = 8,
         dim_head = 64,
         ff_mult = 4,
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_chunk_size = None,
-        sparse_3dna_attn = False,
         sparse_3dna_kernel_size = 3,
-        sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
         shift_video_tokens = False,
+        shift_audio_tokens = False,
+        audio_tokens_per_timestep = 1,
         cross_modality_attn_every = 3
     ):
         super().__init__()
-        assert not (sparse_3dna_attn and not exists(sparse_3dna_video_shape)), 'sparse_3dna_video_shape must be defined if turned on'
-
         self.layers = MList([])
         self.layer_types = []
 
@@ -1318,10 +1339,14 @@ class ReversibleDualModalityDecoder(nn.Module):
             video_ff = create_ff()
             audio_ff = create_ff()
 
-            if sparse_3dna_attn and shift_video_tokens:
+            if shift_video_tokens:
                 fmap_size = sparse_3dna_video_shape[-1]
                 video_self_attn = ShiftVideoTokens(video_self_attn, image_size = fmap_size)
                 video_ff        = ShiftVideoTokens(video_ff, image_size = fmap_size)
+
+            if shift_audio_tokens:
+                audio_self_attn = ShiftAudioTokens(audio_self_attn, audio_tokens_per_timestep = audio_tokens_per_timestep)
+                audio_ff        = ShiftAudioTokens(audio_ff, audio_tokens_per_timestep = audio_tokens_per_timestep)
 
             self.layers.append(MList([
                 norm_wrapper(video_self_attn),
@@ -1723,6 +1748,7 @@ class NUWAVideoAudio(nn.Module):
         image_size,
         num_audio_tokens,
         num_audio_tokens_per_video_frame,
+        audio_tokens_per_timestep = 1,
         max_video_frames = 5,
         text_num_tokens = 49408,
         text_max_seq_len = 256,
@@ -1740,6 +1766,7 @@ class NUWAVideoAudio(nn.Module):
         ff_chunk_size = None,
         embed_gradient_frac = 0.2,
         shift_video_tokens = True,
+        shift_audio_tokens = True,
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilation = 1,
@@ -1810,9 +1837,10 @@ class NUWAVideoAudio(nn.Module):
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout,
             ff_chunk_size = ff_chunk_size,
+            audio_tokens_per_timestep = audio_tokens_per_timestep,
+            shift_audio_tokens = shift_audio_tokens,
             shift_video_tokens = shift_video_tokens,
             sparse_3dna_video_shape = video_shape,
-            sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_dilations = sparse_3dna_dilations,
             sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
