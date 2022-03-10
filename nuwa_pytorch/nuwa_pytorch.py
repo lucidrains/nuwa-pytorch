@@ -1281,7 +1281,7 @@ class DualModalityDecoder(nn.Module):
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
         sparse_2dna_kernel_size = 7,
-        sparse_2dna_dilation = 1,
+        sparse_2dna_dilation = (1,),
         shift_video_tokens = False,
         shift_audio_tokens = False,
         audio_tokens_per_timestep = 1,
@@ -1326,14 +1326,14 @@ class DualModalityDecoder(nn.Module):
             ])
 
         def audio_intra_modality_attn():
-            dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+            dilation = sparse_2dna_dilation[ind % len(sparse_2dna_dilation)]
 
             self_attn = SparseCausal2DNA(
                 dim = dim,
                 heads = heads,
                 dim_head = dim_head,
                 kernel_size = sparse_2dna_kernel_size,
-                dilation = sparse_2dna_dilation,
+                dilation = dilation,
                 dropout = attn_dropout
             )
 
@@ -1467,7 +1467,7 @@ class ReversibleDualModalityDecoder(nn.Module):
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
         sparse_2dna_kernel_size = 7,
-        sparse_2dna_dilation = 1,
+        sparse_2dna_dilation = (1,),
         shift_video_tokens = False,
         shift_audio_tokens = False,
         audio_tokens_per_timestep = 1,
@@ -1481,7 +1481,8 @@ class ReversibleDualModalityDecoder(nn.Module):
         create_ff = lambda: FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
 
         for ind in range(depth):
-            dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+            video_dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+            audio_dilation = sparse_2dna_dilation[ind % len(sparse_2dna_dilation)]
 
             video_self_attn = Sparse3DNA(
                 dim = dim,
@@ -1489,7 +1490,7 @@ class ReversibleDualModalityDecoder(nn.Module):
                 dim_head = dim_head,
                 causal = True,
                 kernel_size = sparse_3dna_kernel_size,
-                dilation = dilation,
+                dilation = video_dilation,
                 video_shape = sparse_3dna_video_shape,
                 query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
             )
@@ -1500,7 +1501,7 @@ class ReversibleDualModalityDecoder(nn.Module):
                 dim_head = dim_head,
                 dropout = attn_dropout,
                 kernel_size = sparse_2dna_kernel_size,
-                dilation = sparse_2dna_dilation
+                dilation = audio_dilation
             )
 
             video_ff = create_ff()
@@ -1995,6 +1996,8 @@ class NUWAVideoAudio(nn.Module):
         # cycle dilation for sparse 3d-nearby attention
 
         sparse_3dna_dilations = tuple(range(1, sparse_3dna_dilation + 1)) if not isinstance(sparse_3dna_dilation, (list, tuple)) else sparse_3dna_dilation
+
+        sparse_2dna_dilation = tuple(range(1, sparse_2dna_dilation + 1)) if not isinstance(sparse_2dna_dilation, (list, tuple)) else sparse_2dna_dilation
 
         decoder_klass = ReversibleDualModalityDecoder if dec_reversible else DualModalityDecoder
 
