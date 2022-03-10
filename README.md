@@ -342,6 +342,8 @@ vae = VQGanVAE(
 - [ ] build NUWA controller class that can accept text or sketch
 - [ ] key masking for 3dna attention - for variable sketch length masking
 - [ ] figure out spec vqgan and fit it into the framework, take care of audio encoding / decoding automatically
+- [ ] add cycle dilation to audio
+- [ ] add axial positional bias for both sparse attentions of audio and video
 
 ## Citations
 
