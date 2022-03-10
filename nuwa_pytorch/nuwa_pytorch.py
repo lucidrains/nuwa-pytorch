@@ -619,8 +619,36 @@ class SparseCausal2DNA(nn.Module):
         self.height = height # width is the sequence length, time-axis - (batch, seq) -> (batch, time, height)
 
         self.kernel_size = (kernel_size, height)
-        self.dilation = dilation
-        self.padding = calc_same_padding(kernel_size, dilation)
+        self.dilation = (dilation, 1)
+        self.padding = (calc_same_padding(kernel_size, dilation), 0)
+
+        # causal mask
+
+        self.register_buffer('causal_mask', None, persistent = False)
+
+    def get_causal_mask(self, t):
+        if exists(self.causal_mask) and self.causal_mask.shape[-3] == t.shape[-3]:
+            return self.causal_mask
+
+        device, seq_len = t.device, t.shape[-3] * self.height
+        q_range = torch.arange(seq_len, device = device, dtype = torch.float32) + 1
+        k_range = torch.arange(seq_len, device = device, dtype = torch.float32) + 1
+
+        q_range = rearrange(q_range, '(n m) -> n m', m = self.height)
+        k_range = rearrange(k_range, '(n m) -> 1 1 n m', m = self.height)
+
+        k_range = unfoldNd(k_range, kernel_size = self.kernel_size, dilation = self.dilation, padding = self.padding)
+        k_range = rearrange(k_range, '1 d n -> n d')
+
+        k_pad_mask = k_range == 0
+
+        causal_mask = rearrange(q_range, 'n i -> n i 1') > rearrange(k_range, 'n j -> n 1 j')
+        causal_mask |= rearrange(k_pad_mask, 'n j -> n 1 j')
+
+        causal_mask = F.pad(causal_mask, (1, 0), value = True)
+
+        self.register_buffer('causal_mask', causal_mask, persistent = False)
+        return causal_mask
 
     def forward(
         self,
@@ -629,10 +657,8 @@ class SparseCausal2DNA(nn.Module):
     ):
         b, n, h, device = x.shape[0], x.shape[1], self.heads, x.device
 
-        kernel_size, dilation, padding = self.kernel_size, self.dilation, self.padding
-
         tokens_per_timestep = self.height
-        kernel_numel = kernel_size[0] * kernel_size[1]
+        kernel_numel = self.kernel_size[0] * self.kernel_size[1]
 
         # pad to right length
 
@@ -642,10 +668,6 @@ class SparseCausal2DNA(nn.Module):
         # pad for last token in video
 
         padded_x = F.pad(x, (0, 0, 0, seq_pad), value = 0.) if seq_pad > 0 else x
-
-        # mask value
-
-        mask_value = -torch.finfo(x.dtype).max
 
         # derive queries, keys, values
 
@@ -673,7 +695,7 @@ class SparseCausal2DNA(nn.Module):
         # reshape key / values to be unfolded
 
         k, v = map(lambda t: rearrange(t, 'b h (x y) d -> (b h) d x y ', y = tokens_per_timestep), (k, v))
-        k, v = map(lambda t: F.unfold(t, kernel_size = kernel_size, dilation = (dilation, 1), padding = (padding, 0)), (k, v))
+        k, v = map(lambda t: F.unfold(t, kernel_size = self.kernel_size, dilation = self.dilation, padding = self.padding), (k, v))
         k, v = map(lambda t: rearrange(t, '(b h f) (d j) i -> b h i (f j) d', b = b, h = h, j = kernel_numel), (k, v))
 
         # add bos
@@ -686,7 +708,11 @@ class SparseCausal2DNA(nn.Module):
 
         sim = einsum('b h n i d, b h n j d -> b h n i j', q, k)
 
-        # todo - complete causal masking
+        # causal + padding mask
+
+        mask_value = -torch.finfo(x.dtype).max
+        causal_mask = self.get_causal_mask(sim)
+        sim = sim.masked_fill(causal_mask, mask_value)
 
         # attention
 
@@ -1257,6 +1283,8 @@ class DualModalityDecoder(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
+        sparse_2dna_kernel_size = 7,
+        sparse_2dna_dilation = 1,
         shift_video_tokens = False,
         shift_audio_tokens = False,
         audio_tokens_per_timestep = 1,
@@ -1266,7 +1294,7 @@ class DualModalityDecoder(nn.Module):
         self.layers = MList([])
         self.layer_types = []
 
-        def intra_modality_attn(is_video):
+        def video_intra_modality_attn():
             dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
 
             self_attn = Sparse3DNA(
@@ -1289,12 +1317,39 @@ class DualModalityDecoder(nn.Module):
 
             ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
 
-            if is_video and shift_video_tokens:
+            if shift_video_tokens:
                 fmap_size = sparse_3dna_video_shape[-1]
                 self_attn = ShiftVideoTokens(self_attn, image_size = fmap_size)
                 ff        = ShiftVideoTokens(ff, image_size = fmap_size)
 
-            if not is_video and shift_audio_tokens:
+            return MList([
+                SandwichNorm(dim = dim, fn = self_attn),
+                SandwichNorm(dim = dim, fn = cross_attn),
+                SandwichNorm(dim = dim, fn = ff)
+            ])
+
+        def audio_intra_modality_attn():
+            dilation = sparse_3dna_dilations[ind % len(sparse_3dna_dilations)]
+
+            self_attn = SparseCausal2DNA(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                kernel_size = sparse_2dna_kernel_size,
+                dilation = sparse_2dna_dilation,
+                dropout = attn_dropout
+            )
+
+            cross_attn = Attention(
+                dim = dim,
+                heads = heads,
+                dim_head = dim_head,
+                dropout = attn_dropout
+            )
+
+            ff = FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, chunk_size = ff_chunk_size)
+
+            if shift_audio_tokens:
                 self_attn = ShiftAudioTokens(self_attn, audio_tokens_per_timestep = audio_tokens_per_timestep)
                 ff        = ShiftAudioTokens(ff, audio_tokens_per_timestep = audio_tokens_per_timestep)
 
@@ -1323,8 +1378,8 @@ class DualModalityDecoder(nn.Module):
             ])
 
         for ind in range(depth):
-            video_modality_attn = intra_modality_attn(True)
-            audio_modality_attn = intra_modality_attn(False)
+            video_modality_attn = video_intra_modality_attn()
+            audio_modality_attn = audio_intra_modality_attn()
 
             self.layer_types.append('intra_modality')
 
@@ -1414,6 +1469,8 @@ class ReversibleDualModalityDecoder(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
+        sparse_2dna_kernel_size = 7,
+        sparse_2dna_dilation = 1,
         shift_video_tokens = False,
         shift_audio_tokens = False,
         audio_tokens_per_timestep = 1,
@@ -1440,12 +1497,13 @@ class ReversibleDualModalityDecoder(nn.Module):
                 query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
             )
 
-            audio_self_attn = Attention(
+            audio_self_attn = SparseCausal2DNA(
                 dim = dim,
                 heads = heads,
                 dim_head = dim_head,
-                causal = True,
-                dropout = attn_dropout
+                dropout = attn_dropout,
+                kernel_size = sparse_2dna_kernel_size,
+                dilation = sparse_2dna_dilation
             )
 
             video_ff = create_ff()
@@ -1882,6 +1940,8 @@ class NUWAVideoAudio(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilation = 1,
+        sparse_2dna_kernel_size = 7,
+        sparse_2dna_dilation = 1,
         audio_loss_weight = 1.,
         cross_modality_attn_every = 3
     ):
@@ -1956,6 +2016,8 @@ class NUWAVideoAudio(nn.Module):
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_dilations = sparse_3dna_dilations,
             sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+            sparse_2dna_kernel_size = sparse_2dna_kernel_size,
+            sparse_2dna_dilation = sparse_2dna_dilation,
             num_audio_tokens_per_video_frame = num_audio_tokens_per_video_frame,
             num_video_tokens_per_frame = fmap_size * fmap_size,
             cross_modality_attn_every = cross_modality_attn_every
