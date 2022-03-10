@@ -32,6 +32,12 @@ def cast_tuple(val, size = 1):
 def calc_same_padding(kernel_size, dilation = 1):
     return dilation * (kernel_size - 1) // 2
 
+def padding_to_multiple_of(n, mult):
+    remainder = n % mult
+    if remainder == 0:
+        return 0
+    return mult - remainder
+
 # decorators
 
 def eval_decorator(fn):
@@ -456,7 +462,7 @@ class Sparse3DNA(nn.Module):
         bos_only = n == 1
         tokens_per_frame = fmap_size ** 2
 
-        padding = 0 if bos_only else (tokens_per_frame - (n - 1) % tokens_per_frame)
+        padding = padding_to_multiple_of(n - 1, tokens_per_frame)
         num_frames = (n + padding) // tokens_per_frame
 
         # pad for last token in video
@@ -586,6 +592,119 @@ class Sparse3DNA(nn.Module):
         out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
         return self.to_out(out)
 
+class SparseCausal2DNA(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        height = 1,
+        heads = 8,
+        dim_head = 64,
+        dropout = 0.,
+        kernel_size = 5,
+        dilation = 1
+    ):
+        super().__init__()
+        inner_dim = heads * dim_head
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.talking_heads = nn.Conv3d(heads, heads, 1, bias = False)
+        self.dropout = nn.Dropout(dropout)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+        # handle variables for unfold
+
+        self.height = height # width is the sequence length, time-axis - (batch, seq) -> (batch, time, height)
+
+        self.kernel_size = (kernel_size, height)
+        self.dilation = dilation
+        self.padding = calc_same_padding(kernel_size, dilation)
+
+    def forward(
+        self,
+        x,
+        **kwargs
+    ):
+        b, n, h, device = x.shape[0], x.shape[1], self.heads, x.device
+
+        kernel_size, dilation, padding = self.kernel_size, self.dilation, self.padding
+
+        tokens_per_timestep = self.height
+        kernel_numel = kernel_size[0] * kernel_size[1]
+
+        # pad to right length
+
+        bos_only = n == 1
+        seq_pad = padding_to_multiple_of(n - 1, tokens_per_timestep)
+
+        # pad for last token in video
+
+        padded_x = F.pad(x, (0, 0, 0, seq_pad), value = 0.) if seq_pad > 0 else x
+
+        # mask value
+
+        mask_value = -torch.finfo(x.dtype).max
+
+        # derive queries, keys, values
+
+        q, k, v = self.to_qkv(padded_x).chunk(3, dim = -1)
+
+        # handle bos only
+
+        if bos_only:
+            return self.to_out(v)
+
+        out_bos = v[:, :1]
+
+        # split heads
+
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
+
+        # scale
+
+        q = q * self.scale
+
+        # handle bos
+
+        (q_bos, q), (k_bos, k), (v_bos, v) = map(lambda t: (t[:, :, 0], t[:, :, 1:]), (q, k, v))
+
+        # reshape key / values to be unfolded
+
+        k, v = map(lambda t: rearrange(t, 'b h (x y) d -> (b h) d x y ', y = tokens_per_timestep), (k, v))
+        k, v = map(lambda t: F.unfold(t, kernel_size = kernel_size, dilation = (dilation, 1), padding = (padding, 0)), (k, v))
+        k, v = map(lambda t: rearrange(t, '(b h f) (d j) i -> b h i (f j) d', b = b, h = h, j = kernel_numel), (k, v))
+
+        # add bos
+
+        k_bos_repeated, v_bos_repeated = map(lambda t: repeat(t, 'b h d -> b h i 1 d', i = k.shape[-3]), (k_bos, v_bos))
+        k = torch.cat((k_bos_repeated, k), dim = -2)
+        v = torch.cat((v_bos_repeated, v), dim = -2)
+
+        q = rearrange(q, 'b h (x y) d -> b h x y d', y = tokens_per_timestep)
+
+        sim = einsum('b h n i d, b h n j d -> b h n i j', q, k)
+
+        # todo - complete causal masking
+
+        # attention
+
+        attn = stable_softmax(sim, dim = -1)
+        attn = self.talking_heads(attn)
+        attn = self.dropout(attn)
+
+        # aggregate, merge, and combine heads
+
+        out = einsum('b h n i j, b h n j d -> b h n i d', attn, v)
+        out = rearrange(out, 'b h x y d -> b (x y) (h d)')
+
+        # add output for bos back
+
+        out = torch.cat((out_bos, out), dim = -2)
+
+        return self.to_out(out[:, :n])
+
 class SparseCross2DNA(nn.Module):
     def __init__(
         self,
@@ -692,8 +811,7 @@ class SparseCross2DNA(nn.Module):
 
         # pad queries to nearest frame
 
-        q_remainder = q.shape[-2] % tokens_per_frame
-        q_padding = 0 if q_remainder == 0 else (tokens_per_frame - q_remainder)
+        q_padding = padding_to_multiple_of(q.shape[-2], tokens_per_frame)
         q = F.pad(q, (0, 0, 0, q_padding), value = 0.)
 
         # similarity
@@ -733,12 +851,6 @@ class SparseCross2DNA(nn.Module):
 For efficient audio <-> video attention
 Largely inspired by chunk cross attention from https://arxiv.org/abs/2112.04426
 """
-
-def padding_to_multiple_of(n, mult):
-    remainder = n % mult
-    if remainder == 0:
-        return 0
-    return mult - remainder
 
 class CrossModalityCrossAttention(nn.Module):
     def __init__(

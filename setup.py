@@ -4,7 +4,7 @@ setup(
   name = 'nuwa-pytorch',
   packages = find_packages(exclude=[]),
   include_package_data = True,
-  version = '0.4.32',
+  version = '0.4.33',
   license='MIT',
   description = 'NÜWA - Pytorch',
   author = 'Phil Wang',
@@ -16,7 +16,7 @@ setup(
     'transformers'
   ],
   install_requires=[
-    'einops>=0.3',
+    'einops>=0.4.1',
     'ftfy',
     'pillow',
     'regex',
