@@ -1868,11 +1868,10 @@ class NUWA(nn.Module):
         text_mask = text != 0
         text_embeds = self.embed_text(text, mask = text_mask)
 
-        assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
-
         if video.dtype == torch.long:
             frame_indices = video
         else:
+            assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
             assert exists(self.vae), 'VAE must be passed in if you wish for video to be encoded to ids automatically'
             frame_indices = self.vae.get_video_indices(video)
 
@@ -2175,9 +2174,13 @@ class NUWAVideoAudio(nn.Module):
 
         # prep video representation
 
-        assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
+        if video.dtype == torch.long:
+            frame_indices = video
+        else:
+            assert frames == self.max_video_frames, f'you must give the full video frames ({self.max_video_frames}) during training'
+            assert exists(self.vae), 'VAE must be passed in if you wish for video to be encoded to ids automatically'
+            frame_indices = self.vae.get_video_indices(video)
 
-        frame_indices = self.vae.get_video_indices(video)
         frame_indices = rearrange(frame_indices, 'b ... -> b (...)')
         frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
 
