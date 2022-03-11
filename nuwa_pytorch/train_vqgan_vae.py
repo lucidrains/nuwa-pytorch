@@ -238,7 +238,7 @@ class VQGanVAETrainer(nn.Module):
 
             print(f'{self.steps}: saving to {str(self.results_folder)}')
 
-        if self.steps and not (self.steps % self.save_model_every):
+        if not (self.steps % self.save_model_every):
             state_dict = self.vae.state_dict()
             model_path = str(self.results_folder / f'vae.{self.steps}.pt')
             torch.save(state_dict, model_path)

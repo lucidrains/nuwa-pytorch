@@ -7,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from einops import rearrange
 
+from tqdm import tqdm
 import numpy as np
 from shutil import rmtree
 
@@ -50,6 +51,34 @@ def pad_collate_fn(batch):
     texts, videos = zip(*batch)
     return pad_sequence(texts, batch_first = True), torch.stack(videos)
 
+# data pipeline functions
+
+def convert_video_tensor_dataset_to_indices(
+    *,
+    vae,
+    raw_video_dataset,
+    num_frames,
+    path,
+):
+    vae_device = next(vae.parameters()).device
+    num_videos = len(raw_video_dataset)
+    assert num_videos > 0, 'there must be at least 1 video'
+
+    fmap_size = vae.image_size // (vae.num_layers ** 2)
+    shape = (num_videos, num_frames * fmap_size * fmap_size)
+
+    video_indices_memmap = np.memmap(path, mode = 'w+', dtype = np.int64, shape = shape)
+
+    for ind in tqdm(range(num_videos)):
+        _, video = raw_video_dataset[ind]
+        video = rearrange(video, '... -> 1 ...')
+        video = video.to(vae_device)
+        indices = vae.get_video_indices(video)
+        indices = rearrange(indices, '1 f h w -> (f h w)')
+        video_indices_memmap[ind] = indices.cpu().numpy()
+
+    print(f'completed conversion of {num_videos} videos to indices at {path}')
+
 # dataset class
 
 class MnistDataset(Dataset):
@@ -57,7 +86,7 @@ class MnistDataset(Dataset):
         self,
         num_videos,
         videos_memmap_path,
-        labels_memmap_path,
+        text_memmap_path,
         num_digits = 2,
         num_frames = 10,
         image_size = 64,
@@ -67,7 +96,7 @@ class MnistDataset(Dataset):
         super().__init__()
         self.num_videos = num_videos
         self.videos_memmap = np.memmap(videos_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_frames, channels, image_size, image_size))
-        self.labels_memmap = np.memmap(labels_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_digits))
+        self.text_memmap = np.memmap(text_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_digits))
         self.random_rotate = random_rotate
 
     def __len__(self):
@@ -75,7 +104,7 @@ class MnistDataset(Dataset):
 
     def __getitem__(self, idx):
         video = torch.from_numpy(self.videos_memmap[idx].copy()).float()
-        label = torch.from_numpy(self.labels_memmap[idx].copy())
+        label = torch.from_numpy(self.text_memmap[idx].copy())
 
         video /= 255
         video = video.to(torch.float32)
@@ -86,6 +115,35 @@ class MnistDataset(Dataset):
         if self.random_rotate:
             video = T.functional.rotate(video, choice([0, 90, 180, 270]))
 
+        return text, video
+
+class VideoIndicesDataset(Dataset):
+    def __init__(
+        self,
+        *,
+        videos_memmap_path,
+        text_memmap_path,
+        vae,
+        num_videos = 1000,
+        num_frames = 10,
+        num_digits = 2,
+    ):
+        self.num_videos = num_videos
+        fmap_size = vae.image_size // (vae.num_layers ** 2)
+        self.videos_memmap = np.memmap(videos_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_frames * (fmap_size ** 2)))
+        self.text_memmap = np.memmap(text_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_digits))
+
+    def __len__(self):
+        return self.num_videos
+
+    def __getitem__(self, idx):
+        video = torch.from_numpy(self.videos_memmap[idx].copy())
+        text = torch.from_numpy(self.text_memmap[idx].copy())
+
+        text = tokenizer.encode(' '.join(map(str, text.tolist())))
+        text = torch.Tensor(text).long()
+
+        video = video.long()
         return text, video
 
 # dataset for training from folder of videos as gifs
