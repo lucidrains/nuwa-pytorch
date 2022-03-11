@@ -421,6 +421,7 @@ vae = VQGanVAE(
 - [ ] key masking for 3dna attention - for variable sketch length masking
 - [ ] figure out spec vqgan and fit it into the framework, take care of audio encoding / decoding automatically
 - [ ] add axial positional bias for both sparse attentions of audio and video
+- [ ] omit vgg from VAE state dict
 
 ## Citations
 
