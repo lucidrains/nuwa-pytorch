@@ -4,6 +4,7 @@ from pathlib import Path
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 from einops import rearrange
 
 import numpy as np
@@ -11,6 +12,7 @@ from shutil import rmtree
 
 from nuwa_pytorch.tokenizer import tokenizer
 from nuwa_pytorch.optimizer import get_optimizer
+from nuwa_pytorch.image_utils import gif_to_tensor
 from nuwa_pytorch import NUWA
 
 import torchvision.transforms as T
@@ -41,6 +43,12 @@ def accum_log(log, new_logs):
         old_value = log.get(key, 0.)
         log[key] = old_value + new_value
     return log
+
+# dataloader helper functions
+
+def pad_collate_fn(batch):
+    texts, videos = zip(*batch)
+    return pad_sequence(texts, batch_first = True), torch.stack(videos)
 
 # dataset class
 
@@ -79,6 +87,39 @@ class MnistDataset(Dataset):
             video = T.functional.rotate(video, choice([0, 90, 180, 270]))
 
         return text, video
+
+# dataset for training from folder of videos as gifs
+
+class GifVideoDataset(Dataset):
+    def __init__(
+        self,
+        *,
+        folder,
+        channels = 1
+    ):
+        folder = Path(folder)
+        gifs = folder.glob('**/*.gif')
+        txts = folder.glob('**/*.txt')
+
+        gif_path_stems = set(map(lambda t: str(t.with_suffix('')), gifs))
+        txt_path_stems = set(map(lambda t: str(t.with_suffix('')), txts))
+        self.path_stems = list(gif_path_stems.intersection(txt_path_stems))
+
+        self.channels = channels
+        print(f'{len(self.path_stems)} video / text pairs found')
+
+    def __len__(self):
+        return len(self.path_stems)
+
+    def __getitem__(self, idx):
+        path_stem = self.path_stems[idx]
+
+        txt_path = Path(f'{path_stem}.txt')
+        txt_str = txt_path.read_text()
+        text_tensor = torch.Tensor(tokenizer.encode(txt_str)).long()
+
+        video_tensor = gif_to_tensor(f'{path_stem}.gif', channels = self.channels)
+        return text_tensor, video_tensor
 
 # training class
 
@@ -120,6 +161,7 @@ class NUWATrainer(nn.Module):
         self.dl = cycle(DataLoader(
             self.ds,
             batch_size = batch_size,
+            collate_fn = pad_collate_fn,
             shuffle = True
         ))
 

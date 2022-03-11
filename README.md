@@ -291,6 +291,83 @@ trainer.train()
 # results and model checkpoints will be saved periodically to ./results
 ```
 
+To train NUWA, first you need to organize a folder of `.gif` files with corresponding `.txt` files containing its caption. It should be organized as such.
+
+ex.
+
+```
+📂video-and-text-data
+ ┣ 📜cat.gif
+ ┣ 📜cat.txt
+ ┣ 📜dog.gif
+ ┣ 📜dog.txt
+ ┣ 📜turtle.gif
+ ┗ 📜turtle.txt
+```
+
+Then you will load your previously trained VQGan-VAE and train NUWA with the `GifVideoDataset` and `NUWATrainer` classes.
+
+```python
+import torch
+from nuwa_pytorch import NUWA, VQGanVAE
+from nuwa_pytorch.train_nuwa import GifVideoDataset, NUWATrainer
+
+# dataset
+
+ds = GifVideoDataset(
+    folder = './path/to/videos/',
+    channels = 1
+)
+
+# autoencoder
+
+vae = VQGanVAE(
+    dim = 64,
+    image_size = 256,
+    num_layers = 5,
+    num_resnet_blocks = 2,
+    vq_codebook_size = 512,
+    attn_dropout = 0.1
+)
+
+vae.load_state_dict(torch.load('./path/to/trained/vae.pt'))
+
+# NUWA transformer
+
+nuwa = NUWA(
+    vae = vae,
+    dim = 512,
+    text_enc_depth = 6,
+    text_max_seq_len = 256,
+    max_video_frames = 10,
+    dec_depth = 12,
+    dec_reversible = True,
+    enc_reversible = True,
+    attn_dropout = 0.05,
+    ff_dropout = 0.05,
+    sparse_3dna_kernel_size = (5, 3, 3),
+    sparse_3dna_dilation = (1, 2, 4),
+    shift_video_tokens = True
+).cuda()
+
+# data
+
+trainer = NUWATrainer(
+    nuwa = nuwa,                 # NUWA transformer
+    dataset = dataset,           # video dataset class
+    num_train_steps = 1000000,   # number of training steps
+    lr = 3e-4,                   # learning rate
+    wd = 0.01,                   # weight decay
+    batch_size = 8,              # batch size
+    grad_accum_every = 4,        # gradient accumulation
+    max_grad_norm = 0.5,         # gradient clipping
+    num_sampled_frames = 10,     # number of frames to sample
+    results_folder = './results' # folder to store checkpoints and samples
+)
+
+trainer.train()
+```
+
 ## VQ improvements
 
 This library depends on this <a href="https://github.com/lucidrains/vector-quantize-pytorch">vector quantization</a> library, which comes with a number of improvements (improved vqgan, orthogonal codebook regularization, etc). To use any of these improvements, you can configure the vector quantizer keyword params by prepending `vq_` on `VQGanVAE` initialization.
