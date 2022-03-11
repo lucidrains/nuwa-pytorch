@@ -385,11 +385,11 @@ class VQGanVAE(nn.Module):
 
         return vae_copy.to(device)
 
-    def state_dict(self):
+    def state_dict(self, **kwargs):
         # make sure VGG is not saved in state dictionary
         vgg = self.vgg
         delattr(self, 'vgg')
-        state_dict = super().state_dict()
+        state_dict = super().state_dict(**kwargs)
         self.vgg = vgg
         return state_dict
 
