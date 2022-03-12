@@ -269,7 +269,7 @@ class NUWATrainer(nn.Module):
             text, video = next(self.dl)
             text = text.to(device)
 
-            video = self.nuwa.generate(text = text, num_frames = min(video.shape[1], self.num_sampled_frames))
+            video = self.nuwa.generate(text = text[:1], num_frames = min(video.shape[1], self.num_sampled_frames))
             one_video = video[0].cpu().clamp(0., 1.)
 
             text_str = tokenizer.decode(text[0])
