@@ -414,14 +414,14 @@ vae = VQGanVAE(
 - [x] make dual decoder reversible
 - [x] rotary embeddings for encoder
 - [x] add cycle dilation to audio
-- [ ] add cosine sim attention from swinv2 as an option
+- [x] omit vgg from VAE state dict
+- [x] add cosine sim attention from swinv2 as an option
 - [ ] Triton kernel for 3dna attention
 - [ ] offer a colab with moving mnist example, conditioned on present digits
 - [ ] build NUWA controller class that can accept text or sketch
 - [ ] key masking for 3dna attention - for variable sketch length masking
 - [ ] figure out spec vqgan and fit it into the framework, take care of audio encoding / decoding automatically
 - [ ] add axial positional bias for both sparse attentions of audio and video
-- [ ] omit vgg from VAE state dict
 
 ## Citations
 
