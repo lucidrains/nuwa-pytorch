@@ -130,7 +130,7 @@ class VideoIndicesDataset(Dataset):
     ):
         self.num_videos = num_videos
         fmap_size = vae.image_size // (vae.num_layers ** 2)
-        self.videos_memmap = np.memmap(videos_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_frames * (fmap_size ** 2)))
+        self.videos_memmap = np.memmap(videos_memmap_path, mode = 'r', dtype = np.int64, shape = (num_videos, num_frames * (fmap_size ** 2)))
         self.text_memmap = np.memmap(text_memmap_path, mode = 'r', dtype = np.uint8, shape = (num_videos, num_digits))
 
     def __len__(self):

@@ -25,6 +25,15 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+def eval_decorator(fn):
+    def inner(model, *args, **kwargs):
+        was_training = model.training
+        model.eval()
+        out = fn(model, *args, **kwargs)
+        model.train(was_training)
+        return out
+    return inner
+
 # keyword argument helpers
 
 def pick_and_pop(keys, d):
@@ -426,6 +435,7 @@ class VQGanVAE(nn.Module):
         return fmap
 
     @torch.no_grad()
+    @eval_decorator
     def get_video_indices(self, video):
         b, f, _, h, w = video.shape
         images = rearrange(video, 'b f ... -> (b f) ...')
