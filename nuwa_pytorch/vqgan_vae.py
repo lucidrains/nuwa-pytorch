@@ -320,6 +320,7 @@ class VQGanVAE(nn.Module):
         self.image_size = image_size
         self.channels = channels
         self.num_layers = num_layers
+        self.fmap_size = image_size // (num_layers ** 2)
         self.codebook_size = vq_codebook_size
 
         self.encoders = MList([])
@@ -435,6 +436,15 @@ class VQGanVAE(nn.Module):
             fmap = dec(fmap)
 
         return fmap
+
+    @torch.no_grad()
+    @eval_decorator
+    def codebook_indices_to_video(self, indices):
+        b = indices.shape[0]
+        codes = self.codebook[indices]
+        codes = rearrange(codes, 'b (f h w) d -> (b f) d h w', h = self.fmap_size, w = self.fmap_size)
+        video = self.decode(codes)
+        return rearrange(video, '(b f) ... -> b f ...', b = b)
 
     @torch.no_grad()
     @eval_decorator
