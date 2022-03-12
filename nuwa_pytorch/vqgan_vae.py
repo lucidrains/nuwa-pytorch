@@ -411,6 +411,7 @@ class VQGanVAE(nn.Module):
             del vae_copy.discr
             del vae_copy.vgg
 
+        vae_copy.eval()
         return vae_copy.to(device)
 
     @remove_vgg
