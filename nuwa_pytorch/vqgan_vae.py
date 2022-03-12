@@ -1,6 +1,6 @@
 import copy
 import math
-from functools import partial
+from functools import partial, wraps
 from math import sqrt
 
 from vector_quantize_pytorch import VectorQuantize as VQ
@@ -25,12 +25,30 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+# decorators
+
 def eval_decorator(fn):
     def inner(model, *args, **kwargs):
         was_training = model.training
         model.eval()
         out = fn(model, *args, **kwargs)
         model.train(was_training)
+        return out
+    return inner
+
+def remove_vgg(fn):
+    @wraps(fn)
+    def inner(self, *args, **kwargs):
+        has_vgg = hasattr(self, 'vgg')
+        if has_vgg:
+            vgg = self.vgg
+            delattr(self, 'vgg')
+
+        out = fn(self, *args, **kwargs)
+
+        if has_vgg:
+            self.vgg = vgg
+
         return out
     return inner
 
@@ -394,29 +412,13 @@ class VQGanVAE(nn.Module):
 
         return vae_copy.to(device)
 
+    @remove_vgg
     def state_dict(self, *args, **kwargs):
-        # make sure VGG is not saved in state dictionary
-        has_vgg = hasattr(self, 'vgg')
-        if has_vgg:
-            vgg = self.vgg
-            delattr(self, 'vgg')
+        return super().state_dict(*args, **kwargs)
 
-        state_dict = super().state_dict(*args, **kwargs)
-
-        if has_vgg:
-            self.vgg = vgg
-        return state_dict
-
+    @remove_vgg
     def load_state_dict(self, *args, **kwargs):
-        has_vgg = hasattr(self, 'vgg')
-        if has_vgg:
-            vgg = self.vgg
-            delattr(self, 'vgg')
-
-        super().load_state_dict(*args, **kwargs)
-
-        if has_vgg:
-            self.vgg = vgg
+        return super().load_state_dict(*args, **kwargs)
 
     @property
     def codebook(self):
