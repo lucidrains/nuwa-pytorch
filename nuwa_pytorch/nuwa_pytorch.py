@@ -1317,6 +1317,7 @@ class DualModalityDecoder(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
+        sparse_3dna_rel_pos_bias = False,
         sparse_2dna_kernel_size = 7,
         sparse_2dna_dilation = (1,),
         sparse_2dna_rel_pos_bias = False,
@@ -1340,7 +1341,8 @@ class DualModalityDecoder(nn.Module):
                 kernel_size = sparse_3dna_kernel_size,
                 dilation = dilation,
                 video_shape = sparse_3dna_video_shape,
-                query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+                rel_pos_bias = sparse_3dna_rel_pos_bias,
             )
 
             cross_attn = Attention(
@@ -1505,6 +1507,7 @@ class ReversibleDualModalityDecoder(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
+        sparse_3dna_rel_pos_bias = False,
         sparse_2dna_kernel_size = 7,
         sparse_2dna_dilation = (1,),
         sparse_2dna_rel_pos_bias = False,
@@ -1532,7 +1535,8 @@ class ReversibleDualModalityDecoder(nn.Module):
                 kernel_size = sparse_3dna_kernel_size,
                 dilation = video_dilation,
                 video_shape = sparse_3dna_video_shape,
-                query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+                rel_pos_bias = sparse_3dna_rel_pos_bias,
             )
 
             audio_self_attn = SparseCausal2DNA(
@@ -1995,6 +1999,7 @@ class NUWAVideoAudio(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilation = 1,
+        sparse_3dna_rel_pos_bias = True,
         sparse_2dna_kernel_size = 7,
         sparse_2dna_dilation = 1,
         sparse_2dna_rel_pos_bias = True,
@@ -2074,11 +2079,12 @@ class NUWAVideoAudio(nn.Module):
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_dilations = sparse_3dna_dilations,
             sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
-            sparse_2dna_kernel_size = sparse_2dna_kernel_size,
-            sparse_2dna_dilation = sparse_2dna_dilation,
+            sparse_3dna_rel_pos_bias = sparse_3dna_rel_pos_bias,
             num_audio_tokens_per_video_frame = num_audio_tokens_per_video_frame,
             num_video_tokens_per_frame = fmap_size * fmap_size,
             cross_modality_attn_every = cross_modality_attn_every,
+            sparse_2dna_kernel_size = sparse_2dna_kernel_size,
+            sparse_2dna_dilation = sparse_2dna_dilation,
             sparse_2dna_rel_pos_bias = sparse_2dna_rel_pos_bias
         )
 
