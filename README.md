@@ -423,6 +423,7 @@ vae = VQGanVAE(
 - [ ] key masking for 3dna attention - for variable sketch length masking
 - [ ] figure out spec vqgan and fit it into the framework, take care of audio encoding / decoding automatically
 - [ ] turn into CLI tool, like stylegan2-pytorch
+- [ ] look into integrating https://github.com/lucidrains/RQ-Transformer for both video and audio
 
 ## Citations
 
