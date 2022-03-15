@@ -422,6 +422,7 @@ vae = VQGanVAE(
 - [ ] build NUWA controller class that can accept text or sketch
 - [ ] key masking for 3dna attention - for variable sketch length masking
 - [ ] figure out spec vqgan and fit it into the framework, take care of audio encoding / decoding automatically
+- [ ] turn into CLI tool, like stylegan2-pytorch
 
 ## Citations
 
