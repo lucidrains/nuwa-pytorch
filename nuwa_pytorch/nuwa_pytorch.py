@@ -624,7 +624,8 @@ class SparseCausal2DNA(nn.Module):
         dim_head = 64,
         dropout = 0.,
         kernel_size = 5,
-        dilation = 1
+        dilation = 1,
+        rel_pos_bias = False
     ):
         super().__init__()
         inner_dim = heads * dim_head
@@ -643,6 +644,8 @@ class SparseCausal2DNA(nn.Module):
         self.kernel_size = (kernel_size, height)
         self.dilation = (dilation, 1)
         self.padding = (calc_same_padding(kernel_size, dilation), 0)
+
+        self.rel_pos_bias = AxialPositionalEmbedding(heads, shape = self.kernel_size) if exists(rel_pos_bias) else None
 
         # causal mask
 
@@ -726,6 +729,14 @@ class SparseCausal2DNA(nn.Module):
         q = rearrange(q, 'b h (x y) d -> b h x y d', y = tokens_per_timestep)
 
         sim = einsum('b h n i d, b h n j d -> b h n i j', q, k)
+
+        # rel pos bias
+
+        if exists(self.rel_pos_bias):
+            rel_pos_bias = self.rel_pos_bias()
+            rel_pos_bias = rearrange(rel_pos_bias, 'j h -> h 1 1 j')
+            rel_pos_bias = F.pad(rel_pos_bias, (1, 0), value = 0.)
+            sim = sim + rel_pos_bias
 
         # causal + padding mask
 
@@ -1308,6 +1319,7 @@ class DualModalityDecoder(nn.Module):
         sparse_3dna_dilations = (1,),
         sparse_2dna_kernel_size = 7,
         sparse_2dna_dilation = (1,),
+        sparse_2dna_rel_pos_bias = False,
         shift_video_tokens = False,
         shift_audio_tokens = False,
         audio_tokens_per_timestep = 1,
@@ -1360,7 +1372,8 @@ class DualModalityDecoder(nn.Module):
                 dim_head = dim_head,
                 kernel_size = sparse_2dna_kernel_size,
                 dilation = dilation,
-                dropout = attn_dropout
+                dropout = attn_dropout,
+                rel_pos_bias = sparse_2dna_rel_pos_bias
             )
 
             cross_attn = Attention(
@@ -1494,6 +1507,7 @@ class ReversibleDualModalityDecoder(nn.Module):
         sparse_3dna_dilations = (1,),
         sparse_2dna_kernel_size = 7,
         sparse_2dna_dilation = (1,),
+        sparse_2dna_rel_pos_bias = False,
         shift_video_tokens = False,
         shift_audio_tokens = False,
         audio_tokens_per_timestep = 1,
@@ -1527,7 +1541,8 @@ class ReversibleDualModalityDecoder(nn.Module):
                 dim_head = dim_head,
                 dropout = attn_dropout,
                 kernel_size = sparse_2dna_kernel_size,
-                dilation = audio_dilation
+                dilation = audio_dilation,
+                rel_pos_bias = sparse_2dna_rel_pos_bias
             )
 
             video_ff = create_ff()
@@ -1982,6 +1997,7 @@ class NUWAVideoAudio(nn.Module):
         sparse_3dna_dilation = 1,
         sparse_2dna_kernel_size = 7,
         sparse_2dna_dilation = 1,
+        sparse_2dna_rel_pos_bias = True,
         audio_loss_weight = 1.,
         cross_modality_attn_every = 3
     ):
@@ -2062,7 +2078,8 @@ class NUWAVideoAudio(nn.Module):
             sparse_2dna_dilation = sparse_2dna_dilation,
             num_audio_tokens_per_video_frame = num_audio_tokens_per_video_frame,
             num_video_tokens_per_frame = fmap_size * fmap_size,
-            cross_modality_attn_every = cross_modality_attn_every
+            cross_modality_attn_every = cross_modality_attn_every,
+            sparse_2dna_rel_pos_bias = sparse_2dna_rel_pos_bias
         )
 
         self.to_video_logits = nn.Linear(dim, num_image_tokens)
