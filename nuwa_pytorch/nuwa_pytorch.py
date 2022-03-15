@@ -1638,18 +1638,33 @@ class AxialPositionalEmbedding(nn.Module):
         shape
     ):
         super().__init__()
-        self.dim = dim
-        frames, height, width = shape
-        self.pos_frames = nn.Parameter(torch.randn(frames, dim))
-        self.pos_height = nn.Parameter(torch.randn(height, dim))
-        self.pos_width = nn.Parameter(torch.randn(width, dim))
+        shape = tuple(filter(lambda t: t > 1, shape))
 
-    def forward(self):
-        pos_frames = rearrange(self.pos_frames, 'f d -> f 1 1 d')
-        pos_height = rearrange(self.pos_height, 'h d -> 1 h 1 d')
-        pos_width = rearrange(self.pos_width, 'w d -> 1 1 w d')
-        positions = pos_frames + pos_height + pos_width
-        return rearrange(positions, 'f h w d -> 1 (f h w) d')
+        self.dim = dim
+        self.shape = shape
+        self.num_axials = len(shape)
+
+        for axial_ind, axial_len in enumerate(shape):
+            axial_pos = nn.Parameter(torch.randn(axial_len, dim))
+            setattr(self, f'axial{axial_ind + 1}', axial_pos)
+
+    def forward(self, *, flatten = True):
+        positions = None
+
+        for axial_ind in range(self.num_axials):
+            axial_pos = getattr(self, f'axial{axial_ind + 1}')
+
+            if not exists(positions):
+                positions = axial_pos
+                continue
+
+            positions = rearrange(positions, '... d -> ... 1 d')
+            positions = positions + axial_pos
+
+        if flatten:
+            positions = rearrange(positions, '... d -> (...) d')
+
+        return positions
 
 # sampling helpers
 
@@ -1818,7 +1833,7 @@ class NUWA(nn.Module):
                 video_indices_input = video_indices[:, -lookback_tokens:]
 
             frame_embeddings = self.image_embedding(video_indices_input)
-            frame_embeddings = pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
+            frame_embeddings = pos_emb[:frame_embeddings.shape[1]] + frame_embeddings
             frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
 
             frame_embeddings = self.video_transformer(
@@ -1879,7 +1894,7 @@ class NUWA(nn.Module):
         frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
 
         frame_embeddings = self.image_embedding(frame_indices_input)
-        frame_embeddings = self.video_pos_emb()[:, :-1] + frame_embeddings
+        frame_embeddings = self.video_pos_emb()[:-1] + frame_embeddings
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
         frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
@@ -1983,7 +1998,7 @@ class NUWAVideoAudio(nn.Module):
         self.audio_embedding = Embedding(num_audio_tokens, dim, frac_gradient = embed_gradient_frac)
 
         max_audio_seq_len = num_audio_tokens_per_video_frame * max_video_frames
-        self.audio_pos_emb = nn.Embedding(max_audio_seq_len, dim)
+        self.audio_pos_emb = AxialPositionalEmbedding(dim, shape = (num_audio_tokens // audio_tokens_per_timestep, audio_tokens_per_timestep))
 
         self.audio_loss_weight = audio_loss_weight
 
@@ -2093,13 +2108,13 @@ class NUWAVideoAudio(nn.Module):
             # prep video embeddings
 
             frame_embeddings = self.image_embedding(video_indices_input)
-            frame_embeddings = video_pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
+            frame_embeddings = video_pos_emb[:frame_embeddings.shape[1]] + frame_embeddings
             frame_embeddings = torch.cat((video_bos, frame_embeddings), dim = 1)
 
             # prep audio embeddings
 
             audio_embeddings = self.audio_embedding(audio_indices_input)
-            audio_pos_emb = self.audio_pos_emb(torch.arange(audio_embeddings.shape[1], device = device))
+            audio_pos_emb = self.audio_pos_emb()[:audio_embeddings.shape[1]]
             audio_pos_emb = rearrange(audio_pos_emb, 'n d -> 1 n d')
             audio_embeddings = audio_embeddings + audio_pos_emb
             audio_embeddings = torch.cat((audio_bos, audio_embeddings), dim = 1)
@@ -2185,7 +2200,7 @@ class NUWAVideoAudio(nn.Module):
         frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
 
         frame_embeddings = self.image_embedding(frame_indices_input)
-        frame_embeddings = self.video_pos_emb()[:, :-1] + frame_embeddings
+        frame_embeddings = self.video_pos_emb()[:-1] + frame_embeddings
 
         video_bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
         frame_embeddings = torch.cat((video_bos, frame_embeddings), dim = 1)
@@ -2195,7 +2210,7 @@ class NUWAVideoAudio(nn.Module):
         audio_indices_input = audio[:, :-1] if return_loss else audio
 
         audio_embeddings = self.audio_embedding(audio_indices_input)
-        audio_pos_emb = self.audio_pos_emb(torch.arange(audio_embeddings.shape[1], device = device))
+        audio_pos_emb = self.audio_pos_emb()[:audio_embeddings.shape[1]]
         audio_embeddings = audio_embeddings + rearrange(audio_pos_emb, 'n d -> 1 n d')
 
         audio_bos = repeat(self.audio_bos, 'd -> b 1 d', b = batch)
@@ -2360,7 +2375,7 @@ class NUWASketch(nn.Module):
         num_tokens = sketch_tokens.shape[1]
 
         sketch_pos_emb = self.sketch_pos_emb()
-        sketch_pos_emb = sketch_pos_emb[:, :num_tokens]
+        sketch_pos_emb = sketch_pos_emb[:num_tokens]
 
         sketch_tokens = sketch_tokens + sketch_pos_emb
 
@@ -2411,7 +2426,7 @@ class NUWASketch(nn.Module):
                 video_indices_input = video_indices[:, -lookback_tokens:]
 
             frame_embeddings = self.image_embedding(video_indices_input)
-            frame_embeddings = pos_emb[:, :frame_embeddings.shape[1]] + frame_embeddings
+            frame_embeddings = pos_emb[:frame_embeddings.shape[1]] + frame_embeddings
             frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
 
             frame_embeddings = self.video_transformer(
@@ -2482,7 +2497,7 @@ class NUWASketch(nn.Module):
         frame_indices_input = frame_indices[:, :-1] if return_loss else frame_indices
 
         frame_embeddings = self.image_embedding(frame_indices_input)
-        frame_embeddings = self.video_pos_emb()[:, :-1] + frame_embeddings
+        frame_embeddings = self.video_pos_emb()[:-1] + frame_embeddings
 
         bos = repeat(self.video_bos, 'd -> b 1 d', b = batch)
         frame_embeddings = torch.cat((bos, frame_embeddings), dim = 1)
