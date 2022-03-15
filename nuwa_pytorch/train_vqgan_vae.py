@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as T
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision.utils import make_grid, save_image
 
 from einops import rearrange
@@ -127,7 +127,9 @@ class VQGanVAETrainer(nn.Module):
         folder = None,
         save_results_every = 100,
         save_model_every = 1000,
-        results_folder = './results'
+        results_folder = './results',
+        valid_frac = 0.05,
+        random_split_seed = 42
     ):
         super().__init__()
         assert isinstance(vae, VQGanVAE), 'vae must be instance of VQGanVAE'
@@ -158,10 +160,27 @@ class VQGanVAETrainer(nn.Module):
         elif exists(images_memmap_path):
             self.ds = MemmappedImageDataset(path = images_memmap_path, shape = images_memmap_shape)
 
+        # split for validation
+
+        if valid_frac > 0:
+            train_size = int((1 - valid_frac) * len(self.ds))
+            valid_size = len(self.ds) - train_size
+            self.ds, self.valid_ds = random_split(self.ds, [train_size, valid_size], generator = torch.Generator().manual_seed(random_split_seed))
+            print(f'training with dataset of {len(self.ds)} samples and validating with randomly splitted {len(self.valid_ds)} samples')
+        else:
+            self.valid_ds = self.ds
+            print(f'training with shared training and valid dataset of {len(self.ds)} samples')
+
         # dataloader
 
         self.dl = cycle(DataLoader(
             self.ds,
+            batch_size = batch_size,
+            shuffle = True
+        ))
+
+        self.valid_dl = cycle(DataLoader(
+            self.valid_ds,
             batch_size = batch_size,
             shuffle = True
         ))
