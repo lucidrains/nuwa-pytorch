@@ -1,3 +1,4 @@
+import functools
 from functools import partial
 
 import torch
@@ -78,6 +79,9 @@ def prob_mask_like(shape, prob, device):
 def batch_process(t, fn, chunks = 10, dim = 0):
     chunks = [fn(t_chunk) for t_chunk in t.chunk(chunks, dim = dim)]
     return torch.cat(chunks, dim = dim)
+
+def mult_reduce(arr):
+    return functools.reduce(lambda x, y: x * y, arr, 1)
 
 # gradient control
 
@@ -390,7 +394,8 @@ class Sparse3DNA(nn.Module):
         dim_head = 64,
         dropout = 0.,
         causal = False,
-        query_num_frames_chunk = None
+        query_num_frames_chunk = None,
+        rel_pos_bias = False
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -409,7 +414,11 @@ class Sparse3DNA(nn.Module):
         self.kernel_size = cast_tuple(kernel_size, size = 3)
         assert all(map(lambda n: n % 2 == 1, self.kernel_size)), 'kernel size must be odd'
 
-        self.kernel_numel = self.kernel_size[0] * self.kernel_size[1] * self.kernel_size[2]
+        self.kernel_numel = mult_reduce(self.kernel_size)
+
+        # relative positional bias per head, if needed
+
+        self.rel_pos_bias = AxialPositionalEmbedding(heads, shape = self.kernel_size) if rel_pos_bias else None
 
         # calculate padding
 
@@ -500,6 +509,14 @@ class Sparse3DNA(nn.Module):
         k, v = map(lambda t: rearrange(t, 'b (f h w) d -> b d f h w', f  = num_frames, h = fmap_size), (k, v))
         k, v = map(lambda t: F.pad(t, video_padding), (k, v))
 
+        # axial relative pos bias
+
+        rel_pos_bias = None
+
+        if exists(self.rel_pos_bias):
+            rel_pos_bias = rearrange(self.rel_pos_bias(), 'j h -> h 1 j')
+            rel_pos_bias = F.pad(rel_pos_bias, (1, 0), value = 0.)
+
         # put the attention processing code in a function
         # to allow for processing queries in chunks of frames
 
@@ -521,6 +538,11 @@ class Sparse3DNA(nn.Module):
             # calculate sim
 
             sim = einsum('b i d, b i j d -> b i j', q, k)
+
+            # add rel pos bias, if needed
+
+            if exists(rel_pos_bias):
+                sim = sim + rel_pos_bias
 
             # causal mask
 
@@ -1061,6 +1083,7 @@ class Transformer(nn.Module):
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
+        sparse_3dna_rel_pos_bias = False,
         shift_video_tokens = False,
         rotary_pos_emb = False
     ):
@@ -1082,7 +1105,8 @@ class Transformer(nn.Module):
                     kernel_size = sparse_3dna_kernel_size,
                     dilation = dilation,
                     video_shape = sparse_3dna_video_shape,
-                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+                    rel_pos_bias = sparse_3dna_rel_pos_bias,
                 )
             else:
                 self_attn = Attention(
@@ -1172,6 +1196,7 @@ class ReversibleTransformer(nn.Module):
         sparse_3dna_video_shape = None,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilations = (1,),
+        sparse_3dna_rel_pos_bias = False,
         shift_video_tokens = False,
         rotary_pos_emb = False
     ):
@@ -1194,7 +1219,8 @@ class ReversibleTransformer(nn.Module):
                     kernel_size = sparse_3dna_kernel_size,
                     dilation = dilation,
                     video_shape = sparse_3dna_video_shape,
-                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+                    query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+                    rel_pos_bias = sparse_3dna_rel_pos_bias,
                 )
             else:
                 image_size = None
@@ -1705,6 +1731,7 @@ class NUWA(nn.Module):
         sparse_3dna_kernel_size = 3,
         sparse_3dna_query_num_frames_chunk = None,
         sparse_3dna_dilation = 1,
+        sparse_3dna_rel_pos_bias = False
     ):
         super().__init__()
         assert exists(vae) ^ exists(image_size), 'either VAE or image size must be specified'
@@ -1769,7 +1796,8 @@ class NUWA(nn.Module):
             sparse_3dna_attn = True,
             sparse_3dna_kernel_size = sparse_3dna_kernel_size,
             sparse_3dna_dilations = sparse_3dna_dilations,
-            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk
+            sparse_3dna_query_num_frames_chunk = sparse_3dna_query_num_frames_chunk,
+            sparse_3dna_rel_pos_bias = sparse_3dna_rel_pos_bias
         )
 
         self.to_logits = nn.Linear(dim, num_image_tokens)
