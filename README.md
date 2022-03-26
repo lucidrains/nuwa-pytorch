@@ -10,6 +10,10 @@ Implementation of <a href="https://arxiv.org/abs/2111.12417">NÜWA</a>, state of
 
 <a href="https://www.youtube.com/watch?v=C9CTnZJ9ZE0">DeepReader</a>
 
+## Status
+
+March 2022 - seeing signs of life with a difficult version of <a href="https://github.com/lucidrains/nuwa-pytorch/discussions/2#discussioncomment-2375973">moving mnist</a>
+
 ## Install
 
 ```bash
