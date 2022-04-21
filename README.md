@@ -12,7 +12,10 @@ Implementation of <a href="https://arxiv.org/abs/2111.12417">NÜWA</a>, state of
 
 ## Status
 
-March 2022 - seeing signs of life with a difficult version of <a href="https://github.com/lucidrains/nuwa-pytorch/discussions/2#discussioncomment-2375973">moving mnist</a>
+- March 2022 - seeing signs of life with a difficult version of <a href="https://github.com/lucidrains/nuwa-pytorch/discussions/2#discussioncomment-2375973">moving mnist</a>
+
+- April 2022 - It seems as though a <a href="https://github.com/lucidrains/video-diffusion-pytorch">diffusion based method</a> has taken the new throne for SOTA. However, I will continue on with NUWA, extending it to use multi-headed codes + <a href="https://github.com/lucidrains/RQ-Transformer/blob/main/rq_transformer/hierarchical_causal_transformer.py">hierarchical causal transformer</a>. I think that direction is untapped for improving on this line of work.
+
 
 ## Install
 
