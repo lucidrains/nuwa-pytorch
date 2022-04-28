@@ -185,7 +185,8 @@ class VQGanVAETrainer(nn.Module):
         random_split_seed = 42,
         ema_beta = 0.995,
         ema_update_after_step = 2000,
-        ema_update_every = 10
+        ema_update_every = 10,
+        apply_grad_penalty_every = 4,
     ):
         super().__init__()
         assert isinstance(vae, VQGanVAE), 'vae must be instance of VQGanVAE'
@@ -247,6 +248,8 @@ class VQGanVAETrainer(nn.Module):
         self.save_model_every = save_model_every
         self.save_results_every = save_results_every
 
+        self.apply_grad_penalty_every = apply_grad_penalty_every
+
         self.results_folder = Path(results_folder)
 
         if len([*self.results_folder.glob('**/*')]) > 0 and yes_or_no('do you want to clear previous experiment checkpoints and results?'):
@@ -257,6 +260,7 @@ class VQGanVAETrainer(nn.Module):
     def train_step(self):
         device = next(self.vae.parameters()).device
         steps = int(self.steps.item())
+        apply_grad_penalty = not (steps % self.apply_grad_penalty_every)
 
         self.vae.train()
 
@@ -270,7 +274,12 @@ class VQGanVAETrainer(nn.Module):
             img = next(self.dl)
             img = img.to(device)
 
-            loss = self.vae(img, return_loss = True)
+            loss = self.vae(
+                img,
+                return_loss = True,
+                apply_grad_penalty = apply_grad_penalty
+            )
+
             accum_log(logs, {'loss': loss.item() / self.grad_accum_every})
 
             (loss / self.grad_accum_every).backward()
