@@ -298,6 +298,7 @@ class VQGanVAE(nn.Module):
         use_hinge_loss = True,
         num_resnet_blocks = 1,
         vgg = None,
+        vq_codebook_dim = 256,
         vq_codebook_size = 512,
         vq_decay = 0.8,
         vq_commitment_weight = 1.,
@@ -365,7 +366,8 @@ class VQGanVAE(nn.Module):
         append(self.decoders, nn.Conv2d(dim, channels, 1))
 
         self.vq = VQ(
-            dim = codebook_dim,
+            dim = layer_dims[-1],
+            codebook_dim = vq_codebook_dim,
             codebook_size = vq_codebook_size,
             decay = vq_decay,
             commitment_weight = vq_commitment_weight,
