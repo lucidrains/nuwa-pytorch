@@ -68,11 +68,6 @@ def gumbel_sample(t, temperature = 1., dim = -1):
 def safe_div(numer, denom, eps = 1e-6):
     return numer / (denom + eps)
 
-def stable_softmax(t, dim = -1, alpha = 32 ** 2):
-    t = t / alpha
-    t = t - torch.amax(t, dim = dim, keepdim = True).detach()
-    return (t * alpha).softmax(dim = dim)
-
 def prob_mask_like(shape, prob, device):
     return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
 
@@ -373,7 +368,7 @@ class Attention(nn.Module):
 
         # attention
 
-        attn = stable_softmax(sim, dim = -1)
+        attn = sim.softmax(dim = -1, dtype = torch.float32)
         attn = self.talking_heads(attn)
         attn = self.dropout(attn)
 
@@ -556,7 +551,7 @@ class Sparse3DNA(nn.Module):
 
             # attention
 
-            attn = stable_softmax(sim, dim = -1)
+            attn = sim.softmax(dim = -1, dtype = torch.float32)
 
             attn = rearrange(attn, '(b h) ... -> b h ...', h = h)
             attn = self.talking_heads(attn)
@@ -748,7 +743,7 @@ class SparseCausal2DNA(nn.Module):
 
         # attention
 
-        attn = stable_softmax(sim, dim = -1)
+        attn = sim.softmax(dim = -1, dtype = torch.float32)
         attn = self.talking_heads(attn)
         attn = self.dropout(attn)
 
@@ -844,7 +839,7 @@ class SparseCross2DNA(nn.Module):
         bos_context_mask = F.pad(bos_context_mask, (1, 0), value = True)
         sim_bos = sim_bos.masked_fill(~bos_context_mask, mask_value)
 
-        attn_bos = stable_softmax(sim_bos, dim = -1)
+        attn_bos = sim_bos.softmax(dim = -1, dtype = torch.float32)
         out_bos = einsum('b h j, b h j d -> b h d', attn_bos, v_for_bos)
         out_bos = rearrange(out_bos, 'b h d -> b 1 (h d)')
 
@@ -890,7 +885,7 @@ class SparseCross2DNA(nn.Module):
 
         # attention
 
-        attn = stable_softmax(sim, dim = -1)
+        attn = sim.softmax(dim = -1, dtype = torch.float32)
         attn = self.talking_heads(attn)
         attn = self.dropout(attn)
 
@@ -1050,7 +1045,7 @@ class CrossModalityCrossAttention(nn.Module):
             context_mask = F.pad(context_mask, (1, 0), value = True) # null key / value
             sim = sim.masked_fill(~context_mask, max_neg_value)
 
-        attn = stable_softmax(sim, dim = -1)
+        attn = sim.softmax(dim = -1, dtype = torch.float32)
         attn = self.dropout(attn)
 
         attn = self.talking_heads(attn)
